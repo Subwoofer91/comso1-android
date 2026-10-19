@@ -1,0 +1,1 @@
+-keep class com.jcraft.jsch.jce.** { *; }
