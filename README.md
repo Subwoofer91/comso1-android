@@ -1,4 +1,4 @@
-# Comso1 Android V0.3.1
+# Comso1 Android V0.4.0
 
 Comso1 是一个 Android 原生 Kotlin + Jetpack Compose 客户端，用手机聊天界面通过 SSH 连接 Ubuntu VPS，并在 VPS 上以 `codex` 用户运行 Codex CLI。
 
@@ -8,11 +8,12 @@ Comso1 是一个 Android 原生 Kotlin + Jetpack Compose 客户端，用手机�
 
 - 中文界面，默认聊天模式。
 - 深色 Gemini 风格聊天界面，以蓝色作为统一强调色；状态栏与导航栏安全区已适配，系统栏图标固定为适合深色背景的浅色。
-- Comso1 使用黑底蓝白同心光环自适应启动图标，品牌标记在应用内保持一致。
+- Comso1 使用黑底蓝白同心光环自适应启动图标；Android 12 及以上的系统启动页和应用窗口背景统一为纯黑色。
 - 覆盖式会话抽屉可完全收起，收起后只保留左上角菜单按钮。
 - 抽屉底部提供“设置”和“终端/聊天”切换。
 - 底部输入框单独响应软键盘，顶栏与整页不会随键盘重复位移。
-- 顶栏提供带完整版本号的模型选择和按模型能力渲染的推理强度滑块，选择会在本机持久化。
+- 聊天顶栏为覆盖式半透明布局，只保留侧边栏、新对话和更多操作；消息滚动时可从顶栏下方经过。
+- 模型与推理档位入口位于消息输入栏。App 启动和保存 SSH 设置后会通过 SSH 调用 Codex `app-server` 的 `model/list` 自动读取 VPS 实际可用模型及档位，也可在配置面板手动刷新。
 - SSH 配置：Host、Port、Username、私钥、远端工作目录。
 - 使用 Android Keystore 加密保存 SSH 私钥。
 - 聊天模式执行：
@@ -26,11 +27,12 @@ Comso1 是一个 Android 原生 Kotlin + Jetpack Compose 客户端，用手机�
 - 支持用户主动附加一次手机当前位置，并把坐标、精度和采集时间随本次提示提供给 VPS 上的 Codex。定位会依次尝试网络定位、GPS 和系统最近位置；使用缓存坐标时会明确标注“最近”。
 - 首轮完成后可调用兼容 OpenAI Chat Completions 的模型 API 自动生成标题；支持侧边栏手动改名。
 - 本地保存会话列表、thread id、标题、工作目录和消息历史。
-- 会话行不显示常驻编辑按钮；长按会话可置顶、取消置顶、重命名、归档或移出归档，这些状态会在本地持久化。
+- 会话行不显示常驻编辑按钮；长按会话可查看会话 ID、工作目录和更新时间，也可置顶、取消置顶、重命名、归档或移出归档。
 - 选择历史会话后，会加载本地消息；下一次发送时使用保存的 thread id 和工作目录 resume。
 - 任务运行期间锁定新建、历史选择、设置和模式切换，防止旧任务事件写入错误会话。
 - Stop/Cancel 会断开当前 SSH exec channel；远端 shell 使用 `exec` 启动 Codex，使断开信号直接到达 Codex 进程。
-- 终端模式支持通过 SSH 在工作目录执行一次性 shell 命令并显示输出。
+- 终端模式使用真正的 SSH PTY 和持续交互式 shell，支持 ANSI/xterm-256color、光标、滚动缓冲、终端全屏程序、软键盘输入、Esc/Tab/Ctrl+C/Ctrl+D/方向键、字体缩放、尺寸锁定和重新连接。
+- 终端渲染使用离线打包的 xterm.js；不会访问 CDN，也不会新增公网服务。
 
 ## Android 端配置
 
@@ -55,7 +57,7 @@ Comso1 是一个 Android 原生 Kotlin + Jetpack Compose 客户端，用手机�
 | 标题模型 | `deepseek-flash` | DeepSeek 当前 Flash 模型 ID，也可以换成兼容模型 |
 | 标题 API Key | 空 | 使用 Android Keystore 加密保存，不写入日志 |
 
-为了避免未告知的数据外发，标题生成默认关闭。填写 API Key、打开开关并点击“保存”后才会生效；未保存时使用首条用户消息作为本地回退标题。设置页会明确显示“未启用 / 缺少 API Key / 已配置”，也可以先点击“测试标题 API”验证地址、模型与 Key。实际生成成功或失败会显示在聊天页顶部状态中，不再静默回退。
+为了避免未告知的数据外发，标题生成默认关闭。填写 API Key、打开开关并点击“保存”后才会生效；未保存时使用首条用户消息作为本地回退标题。设置页会明确显示“未启用 / 缺少 API Key / 已配置”，也可以先点击“测试标题 API”验证地址、模型与 Key。标题服务失败时会保留本地回退标题，不覆盖已有标题。
 
 标题是短文本任务，调用 DeepSeek 时会显式使用非思考模式，避免推理 token 挤占标题正文。
 
@@ -63,7 +65,12 @@ Comso1 是一个 Android 原生 Kotlin + Jetpack Compose 客户端，用手机�
 
 ## 模型与推理档位
 
-点击聊天页顶部的“模型 · 档位”会打开底部“模型与推理”面板：
+点击消息输入栏内的“模型 档位”会打开底部“模型与推理”面板：
+
+- App 优先连接 VPS 上的 `codex app-server --listen stdio://`，按照初始化协议调用 `model/list`。
+- 模型名称、默认模型和 `supportedReasoningEfforts` 均按 VPS 返回值渲染，不再要求手机端版本表与服务端完全一致。
+- 面板右上角的刷新按钮可重新读取；远端读取失败时保留内置目录和上一次选择，聊天仍可使用。
+- 读取命令有 20 秒上限，不会因为模型服务暂时超时无限挂起。
 
 - `VPS 默认模型`：不传 `--model`，使用 VPS 上 Codex 的默认模型。
 - GPT-5.6 系列：`GPT-5.6 Sol`、`GPT-5.6 Terra`、`GPT-5.6 Luna`。
@@ -77,7 +84,7 @@ Comso1 是一个 Android 原生 Kotlin + Jetpack Compose 客户端，用手机�
 --model gpt-5.6-sol --config model_reasoning_effort=high
 ```
 
-历史会话的 `resume` 也会使用当前选择。若远端提示模型不可用或不支持该档位，请切回 `VPS 默认模型 · 默认`。
+历史会话的 `resume` 也会使用当前选择。若远端提示模型不可用或不支持该档位，请刷新目录或切回 `VPS 默认模型 · 默认`。
 
 Codex 偶尔可能在 stderr 输出 `failed to refresh available models: request timed out`。这表示在线模型目录刷新超时；如果本地缓存仍可用，任务会继续执行。当前版本会把它视为可恢复警告，不再显示红色错误卡；真正的命令失败仍会正常报告。
 
@@ -118,9 +125,16 @@ sudo chmod 600 /home/codex/.ssh/authorized_keys
 su - codex
 codex --version
 codex exec --json "hello"
+codex app-server --help
 ```
 
-确保这条命令能免交互运行。如果 CLI 需要登录或 token，请先在 VPS 上完成认证。
+确保这些命令能以 `codex` 用户运行。如果 CLI 需要登录或 token，请先在 VPS 上完成认证。自动模型发现需要当前 Codex CLI 提供 `app-server` 和 `model/list`；旧版 CLI 不支持时，App 会自动使用内置模型目录，不影响基本聊天。
+
+Ubuntu 默认提供 `timeout` 命令。可以这样确认：
+
+```bash
+command -v timeout
+```
 
 4. 准备工作目录：
 
@@ -149,7 +163,7 @@ codex exec resume --json --skip-git-repo-check <thread_id> "<message>"
 
 ### 停止运行
 
-Codex 正在运行时，顶部会出现“停止”按钮。点击后会取消当前任务并断开 SSH exec channel。
+Codex 正在运行时，点击聊天页右上角“更多”，选择“停止当前任务”。这会取消当前任务并断开 SSH exec channel。
 
 ### 图片与位置
 
@@ -165,15 +179,20 @@ Codex 正在运行时，顶部会出现“停止”按钮。点击后会取消�
 
 ### 终端模式
 
-点击侧边栏底部“终端”进入终端模式。这里执行的是一次性命令，不是完整交互式 shell。例如：
+点击侧边栏底部“终端”进入终端模式。App 会建立独立 SSH shell channel，并申请 `xterm-256color` PTY，然后自动进入当前会话的工作目录。它是持续的交互式终端，可以运行：
 
 ```bash
 pwd
 ls -la
 git status
+top
+vim
+tmux
 ```
 
-执行目录为当前会话保存的工作目录；如果没有选择会话，则使用设置里的默认工作目录。
+终端顶部的 `-` / `+` 调整字号；锁形按钮用于锁定字号和 PTY 网格，避免旋转或手势造成尺寸变化；刷新按钮会断开并重新建立终端。底部提供移动端常用的 Esc、Tab、Ctrl+C、Ctrl+D 和方向键。执行目录为当前会话保存的工作目录；如果没有选择会话，则使用设置里的默认工作目录。
+
+终端会话与 Codex JSONL 会话是两条独立 SSH 连接。关闭终端页面会立即断开 PTY，不会在后台保留无人管理的 shell。
 
 ## 本地保存内容
 
@@ -181,6 +200,7 @@ App 使用 SharedPreferences 保存：
 
 - VPS Host、Port、Username、工作目录。
 - 当前模型与推理强度。
+- 自动读取的模型目录仅保存在当前进程内；默认模型与档位选择会持久化。
 - 加密后的 SSH 私钥。
 - 加密后的标题 API Key，以及标题服务地址、模型和启用状态。
 - 会话列表：thread id、标题、标题来源、更新时间、工作目录。
@@ -198,6 +218,7 @@ App 使用 SharedPreferences 保存：
 - 标题生成默认关闭；开启后首轮对话内容会发送给用户配置的第三方 API。
 - 定位只在用户点击位置按钮后单次获取；不在后台采集。
 - 图片仅通过 SSH/SFTP 传输，不创建 HTTP 上传服务。远端副本位于 `codex` 用户家目录。
+- 交互式终端只连接同一 SSH Host；xterm.js 资源随 APK 离线提供，WebView 禁止跳转到外部 URL。
 - SSH 主机密钥采用 TOFU（首次使用信任）策略：第一次连接时在本机记录主机公钥，后续公钥变化时拒绝连接，降低中间人攻击风险。
 
 ## 构建 APK
@@ -218,7 +239,7 @@ app/build/outputs/apk/debug/app-debug.apk
 本任务已额外复制一份到：
 
 ```text
-outputs/comso1-v0.3.1-debug.apk
+outputs/comso1-v0.4.0-debug.apk
 ```
 
 ## 常见问题
@@ -311,7 +332,7 @@ Not inside a trusted directory and --skip-git-repo-check was not specified.
 
 ### 模型或推理档位不受支持
 
-模型和档位由远端 Codex 账号及 CLI 决定，不是 SSH 权限。先在顶部选择 `VPS 默认`；如果仍有问题，在 VPS 上以 `codex` 用户运行：
+模型和档位由远端 Codex 账号及 CLI 决定，不是 SSH 权限。先在输入栏选择 `VPS 默认`；如果仍有问题，在 VPS 上以 `codex` 用户运行：
 
 ```bash
 codex --version

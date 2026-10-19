@@ -107,23 +107,6 @@ class CodexRemoteSession(
         if (!turnCompleted) onEvent(CodexUiEvent.Completed(seenThreadId))
     }
 
-    suspend fun runTerminal(
-        workDirOverride: String?,
-        commandText: String,
-        onLine: suspend (String) -> Unit,
-    ): Int {
-        val config = configStore.load().let { saved ->
-            workDirOverride?.takeIf { it.isNotBlank() }?.let { saved.copy(workDir = it) } ?: saved
-        }
-        val command = ShellCommand.terminal(config.workDir, commandText)
-        return transport.execute(
-            config = config,
-            command = command,
-            onStdoutLine = { onLine(it) },
-            onStderrLine = { onLine("ERR: $it") },
-        )
-    }
-
     fun cancel() {
         transport.cancel()
     }

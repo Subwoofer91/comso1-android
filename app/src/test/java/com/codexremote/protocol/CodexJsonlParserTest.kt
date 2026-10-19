@@ -116,4 +116,14 @@ class CodexJsonlParserTest {
         assertTrue(command.contains("--image"))
         assertTrue(command.contains("photo one.png"))
     }
+
+    @Test
+    fun modelListCommandUsesInitializedAppServerProtocol() {
+        val command = ShellCommand.codexModelList("/home/codex/.local/bin/codex")
+
+        assertTrue(command.contains("app-server --listen stdio://"))
+        assertTrue(command.contains("model/list"))
+        assertTrue(command.contains("initialized"))
+        assertTrue(command.contains("timeout 20s"))
+    }
 }

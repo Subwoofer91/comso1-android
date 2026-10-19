@@ -33,8 +33,16 @@ object ShellCommand {
         return loginShell("${preflight}cd ${quote(workDir)} && exec $codex </dev/null")
     }
 
-    fun terminal(workDir: String, command: String): String {
-        return loginShell("cd ${quote(workDir)} && $command")
+    fun codexModelList(codexCommand: String): String {
+        val launcher = commandLauncher(codexCommand.ifBlank { "codex" })
+        val requests = listOf(
+            "{\"method\":\"initialize\",\"id\":1,\"params\":{\"clientInfo\":{\"name\":\"comso1\",\"title\":\"Comso1\",\"version\":\"0.4.0\"}}}",
+            "{\"method\":\"initialized\",\"params\":{}}",
+            "{\"method\":\"model/list\",\"id\":2,\"params\":{\"limit\":100,\"includeHidden\":false}}",
+        ).joinToString("\\n", postfix = "\\n")
+        val requestPipeline = "printf %b ${quote(requests)} | $launcher app-server --listen stdio://"
+        val command = "timeout 20s bash -c ${quote(requestPipeline)}"
+        return loginShell(command)
     }
 
     fun quote(value: String): String {

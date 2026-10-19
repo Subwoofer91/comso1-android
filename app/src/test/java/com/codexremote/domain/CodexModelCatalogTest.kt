@@ -28,4 +28,24 @@ class CodexModelCatalogTest {
         assertEquals("", CodexModelCatalog.normalizeEffort("gpt-5.6-luna", "max"))
         assertEquals("high", CodexModelCatalog.normalizeEffort("gpt-5.6-luna", "high"))
     }
+
+    @Test
+    fun dynamicCatalogControlsRenderedEfforts() {
+        val models = listOf(
+            CodexModelOption(
+                id = "server-model",
+                label = "Server Model",
+                shortLabel = "Server",
+                description = "Remote",
+                family = "VPS 模型",
+                supportedEfforts = listOf("minimal", "high"),
+            ),
+        )
+
+        assertEquals(
+            listOf("", "minimal", "high"),
+            CodexModelCatalog.effortsFor("server-model", models).map { it.id },
+        )
+        assertEquals("", CodexModelCatalog.normalizeEffort("server-model", "max", models))
+    }
 }

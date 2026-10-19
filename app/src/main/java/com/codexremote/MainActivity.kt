@@ -48,6 +48,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.Archive
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.ChatBubbleOutline
 import androidx.compose.material.icons.rounded.Check
@@ -57,7 +58,13 @@ import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.Menu
+import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Remove
 import androidx.compose.material.icons.rounded.AttachFile
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.LocationOn
@@ -69,8 +76,11 @@ import androidx.compose.material.icons.rounded.Unarchive
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -93,6 +103,7 @@ import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -107,6 +118,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -131,6 +143,8 @@ import androidx.core.view.WindowCompat
 import com.codexremote.domain.ChatItem
 import com.codexremote.domain.ChatRole
 import com.codexremote.domain.CodexModelCatalog
+import com.codexremote.domain.CodexModelDiscovery
+import com.codexremote.domain.CodexModelOption
 import com.codexremote.domain.CodexRemoteSession
 import com.codexremote.domain.CodexUiEvent
 import com.codexremote.domain.AgentMessagePhase
@@ -144,11 +158,15 @@ import com.codexremote.domain.TitleApiConfig
 import com.codexremote.domain.VpsConfig
 import com.codexremote.location.PhoneLocationProvider
 import com.codexremote.ssh.JschSshTransport
+import com.codexremote.ssh.JschPtyTerminal
 import com.codexremote.store.LocalAttachmentStore
 import com.codexremote.store.PreferencesConfigStore
 import com.codexremote.store.PreferencesThreadStore
 import com.codexremote.store.PreferencesTitleConfigStore
 import com.codexremote.store.TofuHostKeyRepository
+import com.codexremote.terminal.TerminalWebController
+import com.codexremote.terminal.TerminalWebView
+import java.text.DateFormat
 import java.util.UUID
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
@@ -159,6 +177,7 @@ import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
+        setTheme(R.style.AppTheme)
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         WindowCompat.getInsetsController(window, window.decorView).apply {
@@ -197,9 +216,12 @@ private fun CodexRemoteApp() {
     val locationProvider = remember { PhoneLocationProvider(context) }
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
-    val session = remember {
-        CodexRemoteSession(configStore, threadStore, JschSshTransport(TofuHostKeyRepository(context)))
-    }
+    val hostKeyRepository = remember { TofuHostKeyRepository(context) }
+    val sshTransport = remember { JschSshTransport(hostKeyRepository) }
+    val modelTransport = remember { JschSshTransport(hostKeyRepository) }
+    val session = remember { CodexRemoteSession(configStore, threadStore, sshTransport) }
+    val modelDiscovery = remember { CodexModelDiscovery(configStore, modelTransport) }
+    val ptyTerminal = remember { JschPtyTerminal(hostKeyRepository) }
     val scope = rememberCoroutineScope()
     val initialConfig = remember { configStore.load() }
     val initialEffort = remember(initialConfig.model, initialConfig.reasoningEffort) {
@@ -209,21 +231,22 @@ private fun CodexRemoteApp() {
     var threads by remember { mutableStateOf(threadStore.list()) }
     val messages = remember { mutableStateListOf<ChatItem>() }
     val pendingAttachments = remember { mutableStateListOf<MessageAttachment>() }
-    val terminalLines = remember { mutableStateListOf<String>() }
     var selectedThreadId by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedWorkDir by rememberSaveable { mutableStateOf<String?>(null) }
     var input by rememberSaveable { mutableStateOf("") }
-    var terminalInput by rememberSaveable { mutableStateOf("") }
     var status by rememberSaveable { mutableStateOf("未连接") }
     var running by rememberSaveable { mutableStateOf(false) }
-    var terminalRunning by rememberSaveable { mutableStateOf(false) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
     var mode by rememberSaveable { mutableStateOf(MainMode.Chat) }
     var selectedModel by rememberSaveable { mutableStateOf(initialConfig.model) }
     var selectedEffort by rememberSaveable { mutableStateOf(initialEffort) }
+    var availableModels by remember { mutableStateOf(CodexModelCatalog.models) }
+    var modelsRefreshing by remember { mutableStateOf(false) }
+    var modelRefreshError by remember { mutableStateOf<String?>(null) }
     var activeJob by remember { mutableStateOf<Job?>(null) }
     var pendingLocation by remember { mutableStateOf<PhoneLocation?>(null) }
     var renameTarget by remember { mutableStateOf<ThreadRecord?>(null) }
+    var infoTarget by remember { mutableStateOf<ThreadRecord?>(null) }
     var renameValue by rememberSaveable { mutableStateOf("") }
     val greeting = remember {
         listOf(
@@ -275,10 +298,43 @@ private fun CodexRemoteApp() {
         if (result.values.any { it }) captureLocation() else status = "未授予定位权限"
     }
 
+    fun refreshModels() {
+        if (modelsRefreshing || running) return
+        val config = configStore.load()
+        if (config.host.isBlank() || !configStore.hasPrivateKey()) {
+            modelRefreshError = "请先完成 SSH 配置"
+            return
+        }
+        modelsRefreshing = true
+        modelRefreshError = null
+        scope.launch {
+            runCatching { modelDiscovery.discover() }
+                .onSuccess { result ->
+                    availableModels = result.models
+                    val nextModel = selectedModel.takeIf { selected ->
+                        selected.isBlank() || result.models.any { it.id == selected }
+                    } ?: result.defaultModelId
+                    val nextEffort = CodexModelCatalog.normalizeEffort(
+                        nextModel,
+                        selectedEffort,
+                        result.models,
+                    )
+                    selectedModel = nextModel
+                    selectedEffort = nextEffort
+                    configStore.saveModelSelection(nextModel, nextEffort)
+                }
+                .onFailure { error ->
+                    modelRefreshError = error.message ?: "无法读取模型目录"
+                }
+            modelsRefreshing = false
+        }
+    }
+
     LaunchedEffect(Unit) {
         if (initialEffort != initialConfig.reasoningEffort) {
             configStore.saveModelSelection(initialConfig.model, initialEffort)
         }
+        refreshModels()
     }
 
     fun currentWorkDir(): String = selectedWorkDir?.takeIf { it.isNotBlank() } ?: configStore.load().workDir
@@ -399,7 +455,6 @@ private fun CodexRemoteApp() {
         activeJob?.cancel()
         session.cancel()
         running = false
-        terminalRunning = false
         finishProcess(promoteCandidate = false)
         markAgentComplete()
         status = "已取消"
@@ -407,7 +462,7 @@ private fun CodexRemoteApp() {
 
     fun startSend() {
         val prompt = input.trim()
-        if ((prompt.isBlank() && pendingAttachments.isEmpty() && pendingLocation == null) || running || terminalRunning) return
+        if ((prompt.isBlank() && pendingAttachments.isEmpty() && pendingLocation == null) || running) return
         val workDir = currentWorkDir()
         val sendingAttachments = pendingAttachments.toList()
         val sendingLocation = pendingLocation
@@ -545,41 +600,18 @@ private fun CodexRemoteApp() {
         }
     }
 
-    fun runTerminalCommand() {
-        val command = terminalInput.trim()
-        if (command.isBlank() || running || terminalRunning) return
-        val workDir = currentWorkDir()
-        terminalInput = ""
-        terminalRunning = true
-        status = "终端运行中"
-        terminalLines += "$ $command"
-        activeJob = scope.launch {
-            try {
-                val exitCode = session.runTerminal(workDir, command) { line ->
-                    withContext(Dispatchers.Main) {
-                        terminalLines += line
-                    }
-                }
-                withContext(Dispatchers.Main) {
-                    terminalLines += "[退出码 $exitCode]"
-                    status = "空闲"
-                }
-            } catch (_: CancellationException) {
-                withContext(Dispatchers.Main) {
-                    terminalLines += "[已取消]"
-                    status = "已取消"
-                }
-            } catch (error: Throwable) {
-                withContext(Dispatchers.Main) {
-                    terminalLines += "[错误] ${error.message ?: error::class.java.simpleName}"
-                    status = "错误"
-                }
-            } finally {
-                withContext(Dispatchers.Main) {
-                    terminalRunning = false
-                }
-            }
-        }
+    fun newThread(closeDrawer: Boolean = true) {
+        focusManager.clearFocus(force = true)
+        keyboardController?.hide()
+        selectedThreadId = null
+        selectedWorkDir = configStore.load().workDir
+        messages.clear()
+        input = ""
+        pendingAttachments.clear()
+        pendingLocation = null
+        status = "新会话"
+        mode = MainMode.Chat
+        if (closeDrawer) scope.launch { drawerState.close() }
     }
 
     MaterialTheme(
@@ -600,24 +632,15 @@ private fun CodexRemoteApp() {
     ) {
         ModalNavigationDrawer(
             drawerState = drawerState,
-            gesturesEnabled = !(running || terminalRunning),
+            gesturesEnabled = !running,
             drawerContent = {
                 AppDrawer(
-                    busy = running || terminalRunning,
+                    busy = running,
                     threads = threads,
                     selectedThreadId = selectedThreadId,
                     mode = mode,
                     onClose = { scope.launch { drawerState.close() } },
-                    onNewThread = {
-                        selectedThreadId = null
-                        selectedWorkDir = configStore.load().workDir
-                        messages.clear()
-                        pendingAttachments.clear()
-                        pendingLocation = null
-                        status = "新会话"
-                        mode = MainMode.Chat
-                        scope.launch { drawerState.close() }
-                    },
+                    onNewThread = { newThread() },
                     onSelect = { record ->
                         selectedThreadId = record.id
                         selectedWorkDir = record.workDir.ifBlank { configStore.load().workDir }
@@ -637,6 +660,7 @@ private fun CodexRemoteApp() {
                         renameTarget = record
                         renameValue = record.title
                     },
+                    onShowInfo = { record -> infoTarget = record },
                     onTogglePinned = { record ->
                         threadStore.setPinned(record.id, !record.pinned)
                         threads = threadStore.list()
@@ -656,6 +680,7 @@ private fun CodexRemoteApp() {
                         status = if (archive) "会话已归档" else "会话已恢复"
                     },
                     onToggleMode = {
+                        if (mode == MainMode.Terminal) ptyTerminal.disconnect()
                         mode = if (mode == MainMode.Chat) MainMode.Terminal else MainMode.Chat
                         scope.launch { drawerState.close() }
                     },
@@ -680,15 +705,27 @@ private fun CodexRemoteApp() {
                         onSend = ::startSend,
                         onStop = ::cancelActive,
                         onOpenDrawer = openDrawer,
-                        status = status,
-                        selectedThreadId = selectedThreadId,
-                        workDir = currentWorkDir(),
+                        onNewThread = { newThread(closeDrawer = false) },
+                        onOpenTerminal = {
+                            focusManager.clearFocus(force = true)
+                            keyboardController?.hide()
+                            mode = MainMode.Terminal
+                        },
+                        onOpenSettings = {
+                            focusManager.clearFocus(force = true)
+                            keyboardController?.hide()
+                            showSettings = true
+                        },
                         running = running,
                         configured = configStore.load().host.isNotBlank() && configStore.hasPrivateKey(),
                         model = selectedModel,
                         reasoningEffort = selectedEffort,
+                        availableModels = availableModels,
+                        modelsRefreshing = modelsRefreshing,
+                        modelRefreshError = modelRefreshError,
+                        onRefreshModels = ::refreshModels,
                         onModelSelected = { model ->
-                            val normalizedEffort = CodexModelCatalog.normalizeEffort(model, selectedEffort)
+                            val normalizedEffort = CodexModelCatalog.normalizeEffort(model, selectedEffort, availableModels)
                             selectedModel = model
                             selectedEffort = normalizedEffort
                             configStore.saveModelSelection(model, normalizedEffort)
@@ -723,15 +760,11 @@ private fun CodexRemoteApp() {
                         greeting = greeting,
                     )
                     MainMode.Terminal -> TerminalPane(
-                        lines = terminalLines,
-                        input = terminalInput,
-                        onInputChange = { terminalInput = it },
-                        onRun = ::runTerminalCommand,
-                        onStop = ::cancelActive,
+                        terminal = ptyTerminal,
+                        config = configStore.load(),
                         onOpenDrawer = openDrawer,
-                        status = status,
+                        onClose = { mode = MainMode.Chat },
                         workDir = currentWorkDir(),
-                        running = terminalRunning,
                         configured = configStore.load().host.isNotBlank() && configStore.hasPrivateKey(),
                     )
                 }
@@ -752,6 +785,7 @@ private fun CodexRemoteApp() {
                 selectedWorkDir = selectedWorkDir ?: config.workDir
                 status = "设置已保存"
                 showSettings = false
+                refreshModels()
             },
         )
     }
@@ -784,6 +818,39 @@ private fun CodexRemoteApp() {
             },
         )
     }
+
+    infoTarget?.let { record ->
+        AlertDialog(
+            onDismissRequest = { infoTarget = null },
+            title = { Text("会话信息") },
+            text = {
+                SelectionContainer {
+                    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                        SessionInfoField("标题", record.title.ifBlank { "未命名会话" })
+                        SessionInfoField("会话 ID", record.id)
+                        SessionInfoField("工作目录", record.workDir.ifBlank { configStore.load().workDir })
+                        SessionInfoField(
+                            "最近更新",
+                            DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
+                                .format(record.updatedAt),
+                        )
+                        SessionInfoField("状态", if (record.archived) "已归档" else if (record.pinned) "已置顶" else "最近会话")
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { infoTarget = null }) { Text("完成") }
+            },
+        )
+    }
+}
+
+@Composable
+private fun SessionInfoField(label: String, value: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        Text(label, color = AppMuted, fontSize = 12.sp)
+        Text(value, color = AppText, fontSize = 15.sp, lineHeight = 21.sp)
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -799,6 +866,7 @@ private fun AppDrawer(
     onSettings: () -> Unit,
     onToggleMode: () -> Unit,
     onRename: (ThreadRecord) -> Unit,
+    onShowInfo: (ThreadRecord) -> Unit,
     onTogglePinned: (ThreadRecord) -> Unit,
     onToggleArchived: (ThreadRecord) -> Unit,
 ) {
@@ -979,6 +1047,14 @@ private fun AppDrawer(
                     )
                 }
                 ThreadActionRow(
+                    icon = Icons.Rounded.Info,
+                    label = "会话信息",
+                    onClick = {
+                        actionTarget = null
+                        onShowInfo(record)
+                    },
+                )
+                ThreadActionRow(
                     icon = Icons.Rounded.Edit,
                     label = "重命名",
                     onClick = {
@@ -1076,13 +1152,17 @@ private fun ChatPane(
     onSend: () -> Unit,
     onStop: () -> Unit,
     onOpenDrawer: () -> Unit,
-    status: String,
-    selectedThreadId: String?,
-    workDir: String,
+    onNewThread: () -> Unit,
+    onOpenTerminal: () -> Unit,
+    onOpenSettings: () -> Unit,
     running: Boolean,
     configured: Boolean,
     model: String,
     reasoningEffort: String,
+    availableModels: List<CodexModelOption>,
+    modelsRefreshing: Boolean,
+    modelRefreshError: String?,
+    onRefreshModels: () -> Unit,
     onModelSelected: (String) -> Unit,
     onEffortSelected: (String) -> Unit,
     pendingAttachments: List<MessageAttachment>,
@@ -1098,211 +1178,325 @@ private fun ChatPane(
         if (messages.isNotEmpty()) listState.scrollToItem(messages.lastIndex)
     }
 
-    Column(Modifier.fillMaxSize()) {
-        TopBar(
-            title = "Comso1",
-            status = status,
-            detail = listOfNotNull(
-                if (configured) "SSH 已配置" else "SSH 未配置",
-                selectedThreadId?.let { "会话 ${it.take(8)}" },
-                workDir.takeIf { it.isNotBlank() },
-            ).joinToString(" · "),
+    Box(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize()) {
+            LazyColumn(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                state = listState,
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 104.dp, bottom = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(18.dp),
+            ) {
+                if (messages.isEmpty()) {
+                    item { EmptyState(greeting) }
+                }
+                items(messages, key = { it.id }) { item ->
+                    ChatBubble(item)
+                }
+            }
+            Composer(
+                input = input,
+                running = running,
+                configured = configured,
+                onInputChange = onInputChange,
+                onSend = onSend,
+                model = model,
+                reasoningEffort = reasoningEffort,
+                availableModels = availableModels,
+                modelsRefreshing = modelsRefreshing,
+                modelRefreshError = modelRefreshError,
+                onRefreshModels = onRefreshModels,
+                onModelSelected = onModelSelected,
+                onEffortSelected = onEffortSelected,
+                attachments = pendingAttachments,
+                location = pendingLocation,
+                onPickImages = onPickImages,
+                onRemoveAttachment = onRemoveAttachment,
+                onAttachLocation = onAttachLocation,
+                onRemoveLocation = onRemoveLocation,
+            )
+        }
+        ChatTopBar(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .zIndex(2f),
             running = running,
             onStop = onStop,
             onOpenDrawer = onOpenDrawer,
-            model = model,
-            reasoningEffort = reasoningEffort,
-            onModelSelected = onModelSelected,
-            onEffortSelected = onEffortSelected,
-        )
-        LazyColumn(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth(),
-            state = listState,
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp),
-        ) {
-            if (messages.isEmpty()) {
-                item {
-                    EmptyState(greeting)
-                }
-            }
-            items(messages, key = { it.id }) { item ->
-                ChatBubble(item)
-            }
-        }
-        Composer(
-            input = input,
-            running = running,
-            configured = configured,
-            onInputChange = onInputChange,
-            onSend = onSend,
-            attachments = pendingAttachments,
-            location = pendingLocation,
-            onPickImages = onPickImages,
-            onRemoveAttachment = onRemoveAttachment,
-            onAttachLocation = onAttachLocation,
-            onRemoveLocation = onRemoveLocation,
+            onNewThread = onNewThread,
+            onOpenTerminal = onOpenTerminal,
+            onOpenSettings = onOpenSettings,
         )
     }
 }
 
 @Composable
 private fun TerminalPane(
-    lines: List<String>,
-    input: String,
-    onInputChange: (String) -> Unit,
-    onRun: () -> Unit,
-    onStop: () -> Unit,
+    terminal: JschPtyTerminal,
+    config: VpsConfig,
     onOpenDrawer: () -> Unit,
-    status: String,
+    onClose: () -> Unit,
     workDir: String,
-    running: Boolean,
     configured: Boolean,
 ) {
-    val listState = rememberLazyListState()
-    val keyboard = LocalSoftwareKeyboardController.current
-    LaunchedEffect(lines.size) {
-        if (lines.isNotEmpty()) listState.scrollToItem(lines.lastIndex)
+    val scope = rememberCoroutineScope()
+    val controller = remember { TerminalWebController() }
+    var readySize by remember { mutableStateOf<TerminalSize?>(null) }
+    var retryKey by remember { mutableStateOf(0) }
+    var connectionState by remember { mutableStateOf(if (configured) "正在连接" else "请先配置 SSH") }
+    var connected by remember { mutableStateOf(false) }
+    var locked by rememberSaveable { mutableStateOf(false) }
+    var fontSize by rememberSaveable { mutableStateOf(14) }
+
+    LaunchedEffect(readySize, retryKey, config.host, config.port, config.username, workDir) {
+        val size = readySize ?: return@LaunchedEffect
+        if (!configured) return@LaunchedEffect
+        terminal.disconnect()
+        connectionState = "正在连接"
+        connected = false
+        controller.clear()
+        try {
+            terminal.run(
+                config = config,
+                workDir = workDir,
+                initialColumns = size.columns,
+                initialRows = size.rows,
+                onConnected = {
+                    withContext(Dispatchers.Main) {
+                        connected = true
+                        connectionState = "已连接"
+                        controller.focus()
+                    }
+                },
+                onData = controller::write,
+            )
+            connectionState = "连接已关闭"
+        } catch (_: CancellationException) {
+            connectionState = "连接已关闭"
+        } catch (error: Throwable) {
+            connectionState = error.message ?: "终端连接失败"
+        } finally {
+            connected = false
+        }
     }
 
-    Column(Modifier.fillMaxSize()) {
-        TopBar(
-            title = "SSH 终端",
-            status = status,
-            detail = "工作目录 $workDir",
-            running = running,
-            onStop = onStop,
-            onOpenDrawer = onOpenDrawer,
+    DisposableEffect(terminal) {
+        onDispose { terminal.disconnect() }
+    }
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Color.Black),
+    ) {
+        TerminalWebView(
+            controller = controller,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(top = 86.dp, bottom = 54.dp),
+            onReady = { columns, rows, width, height ->
+                scope.launch {
+                    readySize = TerminalSize(columns, rows, width, height)
+                    controller.setFontSize(fontSize)
+                    controller.setLocked(locked)
+                }
+            },
+            onInput = terminal::write,
+            onResize = { columns, rows, width, height ->
+                if (!locked) terminal.resize(columns, rows, width, height)
+            },
+            onFontSize = { size -> scope.launch { fontSize = size.coerceIn(9, 28) } },
         )
-        SelectionContainer {
-            LazyColumn(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .background(Color(0xFF090A0C)),
-                state = listState,
-                contentPadding = PaddingValues(16.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                if (lines.isEmpty()) {
-                    item {
-                        Text("SSH 终端已就绪", color = AppMuted, fontSize = 13.sp)
-                    }
+
+        TerminalTopBar(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .zIndex(2f),
+            status = connectionState,
+            connected = connected,
+            fontSize = fontSize,
+            locked = locked,
+            onOpenDrawer = onOpenDrawer,
+            onZoomOut = {
+                if (!locked) {
+                    fontSize = (fontSize - 1).coerceAtLeast(9)
+                    controller.setFontSize(fontSize)
                 }
-                items(lines) { line ->
-                    Text(line.ifBlank { " " }, color = Color(0xFFD7E3FF), fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+            },
+            onZoomIn = {
+                if (!locked) {
+                    fontSize = (fontSize + 1).coerceAtMost(28)
+                    controller.setFontSize(fontSize)
                 }
-            }
-        }
+            },
+            onToggleLock = {
+                locked = !locked
+                controller.setLocked(locked)
+            },
+            onReconnect = {
+                terminal.disconnect()
+                retryKey += 1
+            },
+            onClose = {
+                terminal.disconnect()
+                onClose()
+            },
+        )
+
         Surface(
             modifier = Modifier
+                .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .navigationBarsPadding()
-                .imePadding()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            color = AppBackground,
+                .horizontalScroll(rememberScrollState()),
+            color = Color(0xEE111317),
         ) {
-            Surface(
-                shape = RoundedCornerShape(26.dp),
-                color = AppSurface,
+            Row(
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Row(
-                    modifier = Modifier.padding(start = 6.dp, end = 6.dp),
-                    verticalAlignment = Alignment.Bottom,
-                ) {
-                    TextField(
-                        value = input,
-                        onValueChange = onInputChange,
-                        modifier = Modifier.weight(1f),
-                        minLines = 1,
-                        maxLines = 4,
-                        placeholder = { Text("输入 SSH 命令") },
-                        enabled = !running,
-                        textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 14.sp),
-                        colors = transparentTextFieldColors(),
-                    )
-                    FilledIconButton(
-                        onClick = {
-                            keyboard?.hide()
-                            onRun()
-                        },
-                        enabled = !running && configured && input.isNotBlank(),
-                        modifier = Modifier
-                            .padding(bottom = 6.dp)
-                            .size(44.dp),
-                    ) {
-                        Icon(Icons.Rounded.Terminal, contentDescription = "执行命令")
-                    }
-                }
+                TerminalKey("Esc", connected) { terminal.write(byteArrayOf(0x1B)) }
+                TerminalKey("Tab", connected) { terminal.write(byteArrayOf(0x09)) }
+                TerminalKey("Ctrl+C", connected) { terminal.write(byteArrayOf(0x03)) }
+                TerminalKey("Ctrl+D", connected) { terminal.write(byteArrayOf(0x04)) }
+                TerminalKey("↑", connected) { terminal.write("\u001B[A".toByteArray()) }
+                TerminalKey("↓", connected) { terminal.write("\u001B[B".toByteArray()) }
+                TerminalKey("←", connected) { terminal.write("\u001B[D".toByteArray()) }
+                TerminalKey("→", connected) { terminal.write("\u001B[C".toByteArray()) }
             }
         }
     }
 }
 
 @Composable
-private fun TopBar(
-    title: String,
+private fun TerminalKey(label: String, enabled: Boolean, onClick: () -> Unit) {
+    TextButton(onClick = onClick, enabled = enabled, contentPadding = PaddingValues(horizontal = 12.dp)) {
+        Text(label, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+    }
+}
+
+private data class TerminalSize(
+    val columns: Int,
+    val rows: Int,
+    val widthPx: Int,
+    val heightPx: Int,
+)
+
+@Composable
+private fun TerminalTopBar(
+    modifier: Modifier = Modifier,
     status: String,
-    detail: String,
-    running: Boolean,
-    onStop: () -> Unit,
+    connected: Boolean,
+    fontSize: Int,
+    locked: Boolean,
     onOpenDrawer: () -> Unit,
-    model: String? = null,
-    reasoningEffort: String = "",
-    onModelSelected: (String) -> Unit = {},
-    onEffortSelected: (String) -> Unit = {},
+    onZoomOut: () -> Unit,
+    onZoomIn: () -> Unit,
+    onToggleLock: () -> Unit,
+    onReconnect: () -> Unit,
+    onClose: () -> Unit,
 ) {
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
+            .background(Color.Black.copy(alpha = 0.82f))
             .statusBarsPadding()
-            .height(72.dp)
+            .height(68.dp)
             .padding(horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         IconButton(onClick = onOpenDrawer) {
             Icon(Icons.Rounded.Menu, contentDescription = "打开侧边栏")
         }
-        Column(Modifier.weight(1f)) {
-            if (model != null) {
-                ModelEffortPicker(
-                    model = model,
-                    reasoningEffort = reasoningEffort,
-                    enabled = !running,
-                    onModelSelected = onModelSelected,
-                    onEffortSelected = onEffortSelected,
-                )
-            } else {
-                Text(title, fontWeight = FontWeight.Medium, fontSize = 19.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier
-                        .size(7.dp)
-                        .background(AppBlue, CircleShape),
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    "$status · $detail",
-                    fontSize = 11.sp,
-                    color = AppMuted,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
+        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(7.dp).background(if (connected) AppBlue else AppMuted, CircleShape))
+            Spacer(Modifier.width(7.dp))
+            Text(status, color = AppMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        if (running) {
-            FilledIconButton(
-                onClick = onStop,
-                colors = IconButtonDefaults.filledIconButtonColors(
-                    containerColor = AppSurfaceHigh,
-                    contentColor = AppError,
-                ),
+        IconButton(onClick = onZoomOut, enabled = !locked) {
+            Icon(Icons.Rounded.Remove, contentDescription = "缩小终端字体")
+        }
+        Text("$fontSize", color = AppMuted, fontSize = 12.sp, textAlign = TextAlign.Center, modifier = Modifier.width(24.dp))
+        IconButton(onClick = onZoomIn, enabled = !locked) {
+            Icon(Icons.Rounded.Add, contentDescription = "放大终端字体")
+        }
+        IconButton(onClick = onToggleLock) {
+            Icon(if (locked) Icons.Rounded.Lock else Icons.Rounded.LockOpen, contentDescription = if (locked) "解锁终端尺寸" else "锁定终端尺寸")
+        }
+        IconButton(onClick = onReconnect) {
+            Icon(Icons.Rounded.Refresh, contentDescription = "重新连接")
+        }
+        IconButton(onClick = onClose) {
+            Icon(Icons.Rounded.Close, contentDescription = "关闭终端")
+        }
+    }
+}
+
+@Composable
+private fun ChatTopBar(
+    modifier: Modifier = Modifier,
+    running: Boolean,
+    onStop: () -> Unit,
+    onOpenDrawer: () -> Unit,
+    onNewThread: () -> Unit,
+    onOpenTerminal: () -> Unit,
+    onOpenSettings: () -> Unit,
+) {
+    var menuExpanded by remember { mutableStateOf(false) }
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(AppBackground.copy(alpha = 0.84f))
+            .statusBarsPadding()
+            .height(68.dp)
+            .padding(horizontal = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconButton(onClick = onOpenDrawer) {
+            Icon(Icons.Rounded.Menu, contentDescription = "打开侧边栏")
+        }
+        Spacer(Modifier.weight(1f))
+        IconButton(onClick = onNewThread, enabled = !running) {
+            Icon(Icons.Rounded.Edit, contentDescription = "新对话")
+        }
+        Box {
+            IconButton(onClick = { menuExpanded = true }) {
+                Icon(Icons.Rounded.MoreVert, contentDescription = "更多")
+            }
+            DropdownMenu(
+                expanded = menuExpanded,
+                onDismissRequest = { menuExpanded = false },
             ) {
-                Icon(Icons.Rounded.Stop, contentDescription = "停止")
+                if (running) {
+                    DropdownMenuItem(
+                        text = { Text("停止当前任务") },
+                        leadingIcon = { Icon(Icons.Rounded.Stop, contentDescription = null, tint = AppError) },
+                        onClick = {
+                            menuExpanded = false
+                            onStop()
+                        },
+                    )
+                }
+                DropdownMenuItem(
+                    text = { Text("SSH 终端") },
+                    leadingIcon = { Icon(Icons.Rounded.Terminal, contentDescription = null) },
+                    enabled = !running,
+                    onClick = {
+                        menuExpanded = false
+                        onOpenTerminal()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("设置") },
+                    leadingIcon = { Icon(Icons.Rounded.Settings, contentDescription = null) },
+                    enabled = !running,
+                    onClick = {
+                        menuExpanded = false
+                        onOpenSettings()
+                    },
+                )
             }
         }
     }
@@ -1314,12 +1508,16 @@ private fun ModelEffortPicker(
     model: String,
     reasoningEffort: String,
     enabled: Boolean,
+    availableModels: List<CodexModelOption>,
+    refreshing: Boolean,
+    refreshError: String?,
+    onRefresh: () -> Unit,
     onModelSelected: (String) -> Unit,
     onEffortSelected: (String) -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
-    val modelOption = CodexModelCatalog.model(model)
-    val effortOptions = CodexModelCatalog.effortsFor(model)
+    val modelOption = CodexModelCatalog.model(model, availableModels)
+    val effortOptions = CodexModelCatalog.effortsFor(model, availableModels)
     val savedEffortIndex = effortOptions.indexOfFirst { it.id == reasoningEffort }.coerceAtLeast(0)
     var sliderValue by remember(model, reasoningEffort) { mutableFloatStateOf(savedEffortIndex.toFloat()) }
     val sliderIndex = sliderValue.roundToInt().coerceIn(effortOptions.indices)
@@ -1331,7 +1529,7 @@ private fun ModelEffortPicker(
         contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
     ) {
         Text(
-            "${modelOption.shortLabel} · ${selectedEffort.label}",
+            "${modelOption.shortLabel} ${selectedEffort.label}",
             color = if (enabled) AppText else AppMuted,
             fontSize = 18.sp,
             fontWeight = FontWeight.Medium,
@@ -1361,15 +1559,36 @@ private fun ModelEffortPicker(
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = 20.dp),
             ) {
-                Text("模型与推理", fontSize = 22.sp, fontWeight = FontWeight.Medium)
-                Text(
-                    "选择只影响下一次发送，历史会话仍会继续保留上下文",
-                    modifier = Modifier.padding(top = 4.dp, bottom = 18.dp),
-                    color = AppMuted,
-                    fontSize = 12.sp,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("模型与推理", fontSize = 22.sp, fontWeight = FontWeight.Medium)
+                        Text(
+                            "模型与档位来自 VPS 上的 Codex",
+                            modifier = Modifier.padding(top = 4.dp),
+                            color = AppMuted,
+                            fontSize = 12.sp,
+                        )
+                    }
+                    IconButton(onClick = onRefresh, enabled = !refreshing) {
+                        if (refreshing) {
+                            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                        } else {
+                            Icon(Icons.Rounded.Refresh, contentDescription = "刷新模型目录")
+                        }
+                    }
+                }
+                refreshError?.let {
+                    Text(
+                        "自动读取失败，当前使用本地目录：$it",
+                        modifier = Modifier.padding(top = 10.dp),
+                        color = AppError,
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp,
+                    )
+                }
+                Spacer(Modifier.height(14.dp))
 
-                CodexModelCatalog.models.groupBy { it.family }.forEach { (family, options) ->
+                availableModels.groupBy { it.family }.forEach { (family, options) ->
                     Text(
                         family,
                         modifier = Modifier.padding(start = 12.dp, top = 8.dp, bottom = 4.dp),
@@ -1471,7 +1690,17 @@ private fun ModelEffortPicker(
                     color = AppMuted,
                     fontSize = 11.sp,
                 )
-                Spacer(Modifier.height(24.dp))
+                Button(
+                    onClick = { expanded = false },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 20.dp)
+                        .height(52.dp),
+                    shape = RoundedCornerShape(24.dp),
+                ) {
+                    Text("完成", fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                }
+                Spacer(Modifier.height(16.dp))
             }
         }
     }
@@ -2051,6 +2280,14 @@ private fun Composer(
     configured: Boolean,
     onInputChange: (String) -> Unit,
     onSend: () -> Unit,
+    model: String,
+    reasoningEffort: String,
+    availableModels: List<CodexModelOption>,
+    modelsRefreshing: Boolean,
+    modelRefreshError: String?,
+    onRefreshModels: () -> Unit,
+    onModelSelected: (String) -> Unit,
+    onEffortSelected: (String) -> Unit,
     attachments: List<MessageAttachment> = emptyList(),
     location: PhoneLocation? = null,
     onPickImages: () -> Unit = {},
@@ -2087,42 +2324,55 @@ private fun Composer(
                 shape = RoundedCornerShape(28.dp),
                 color = AppSurface,
             ) {
-                Row(
-                    modifier = Modifier.padding(start = 5.dp, end = 6.dp),
-                    verticalAlignment = Alignment.Bottom,
-                ) {
-                    IconButton(onClick = onPickImages, enabled = !running) {
-                        Icon(Icons.Rounded.AttachFile, contentDescription = "添加图片", tint = AppMuted)
-                    }
-                    IconButton(onClick = onAttachLocation, enabled = !running) {
-                        Icon(
-                            Icons.Rounded.LocationOn,
-                            contentDescription = "附加当前位置",
-                            tint = if (location == null) AppMuted else AppBlue,
-                        )
-                    }
+                Column(modifier = Modifier.padding(start = 6.dp, end = 6.dp, top = 2.dp, bottom = 6.dp)) {
                     TextField(
                         value = input,
                         onValueChange = onInputChange,
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.fillMaxWidth(),
                         minLines = 1,
                         maxLines = 5,
                         placeholder = { Text("给 Comso1 发消息") },
                         enabled = !running,
                         colors = transparentTextFieldColors(),
                     )
-                    FilledIconButton(
-                        onClick = {
-                            keyboard?.hide()
-                            onSend()
-                        },
-                        enabled = !running && configured &&
-                            (input.isNotBlank() || attachments.isNotEmpty() || location != null),
-                        modifier = Modifier
-                            .padding(bottom = 6.dp)
-                            .size(44.dp),
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Icon(Icons.AutoMirrored.Rounded.Send, contentDescription = "发送")
+                        IconButton(onClick = onPickImages, enabled = !running) {
+                            Icon(Icons.Rounded.AttachFile, contentDescription = "添加图片", tint = AppMuted)
+                        }
+                        IconButton(onClick = onAttachLocation, enabled = !running) {
+                            Icon(
+                                Icons.Rounded.LocationOn,
+                                contentDescription = "附加当前位置",
+                                tint = if (location == null) AppMuted else AppBlue,
+                            )
+                        }
+                        Box(Modifier.weight(1f)) {
+                            ModelEffortPicker(
+                                model = model,
+                                reasoningEffort = reasoningEffort,
+                                enabled = !running,
+                                availableModels = availableModels,
+                                refreshing = modelsRefreshing,
+                                refreshError = modelRefreshError,
+                                onRefresh = onRefreshModels,
+                                onModelSelected = onModelSelected,
+                                onEffortSelected = onEffortSelected,
+                            )
+                        }
+                        FilledIconButton(
+                            onClick = {
+                                keyboard?.hide()
+                                onSend()
+                            },
+                            enabled = !running && configured &&
+                                (input.isNotBlank() || attachments.isNotEmpty() || location != null),
+                            modifier = Modifier.size(44.dp),
+                        ) {
+                            Icon(Icons.AutoMirrored.Rounded.Send, contentDescription = "发送")
+                        }
                     }
                 }
             }

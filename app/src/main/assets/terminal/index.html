@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <link rel="stylesheet" href="xterm.css">
+  <style>
+    html, body, #terminal { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #050607; }
+    .xterm { padding: 8px 8px 4px; box-sizing: border-box; }
+    .xterm-viewport { scrollbar-color: #30343a transparent; scrollbar-width: thin; }
+  </style>
+</head>
+<body>
+  <div id="terminal"></div>
+  <script src="xterm.js"></script>
+  <script src="addon-fit.js"></script>
+  <script>
+    (() => {
+      const terminal = new Terminal({
+        cursorBlink: true,
+        cursorStyle: 'block',
+        fontFamily: 'monospace',
+        fontSize: 14,
+        lineHeight: 1.15,
+        scrollback: 5000,
+        convertEol: false,
+        allowProposedApi: false,
+        theme: {
+          background: '#050607', foreground: '#e7eaf0', cursor: '#9ab8ee',
+          selectionBackground: '#294b7dcc', black: '#050607', brightBlack: '#6c727d',
+          blue: '#6f91cf', brightBlue: '#9ab8ee', cyan: '#70b7c7', brightCyan: '#91d6e6'
+        }
+      });
+      const fitAddon = new FitAddon.FitAddon();
+      terminal.loadAddon(fitAddon);
+      terminal.open(document.getElementById('terminal'));
+      let locked = false;
+      let ready = false;
+      let pinchDistance = 0;
+
+      function bytesToBase64(bytes) {
+        let binary = '';
+        for (let i = 0; i < bytes.length; i += 0x8000) {
+          binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+        }
+        return btoa(binary);
+      }
+
+      function reportSize() {
+        if (!ready || locked) return;
+        AndroidTerminal.onResize(terminal.cols, terminal.rows, window.innerWidth, window.innerHeight);
+      }
+
+      function fitAndReport() {
+        if (locked) return;
+        fitAddon.fit();
+        reportSize();
+      }
+
+      terminal.onData(data => AndroidTerminal.onData(bytesToBase64(new TextEncoder().encode(data))));
+      terminal.onBinary(data => {
+        const bytes = new Uint8Array(data.length);
+        for (let i = 0; i < data.length; i++) bytes[i] = data.charCodeAt(i) & 255;
+        AndroidTerminal.onData(bytesToBase64(bytes));
+      });
+      terminal.onResize(reportSize);
+
+      window.ComsoTerminal = {
+        writeBase64(value) {
+          const binary = atob(value);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+          terminal.write(bytes);
+        },
+        clear() { terminal.clear(); },
+        focus() { terminal.focus(); },
+        fit() { fitAndReport(); },
+        setLocked(value) { locked = !!value; if (!locked) fitAndReport(); },
+        setFontSize(value) {
+          terminal.options.fontSize = Math.max(9, Math.min(28, Number(value) || 14));
+          if (!locked) fitAndReport();
+        }
+      };
+
+      window.addEventListener('resize', () => setTimeout(fitAndReport, 80));
+      document.addEventListener('touchstart', event => {
+        if (!locked && event.touches.length === 2) {
+          const dx = event.touches[0].clientX - event.touches[1].clientX;
+          const dy = event.touches[0].clientY - event.touches[1].clientY;
+          pinchDistance = Math.hypot(dx, dy);
+        }
+      }, { passive: true });
+      document.addEventListener('touchmove', event => {
+        if (locked || event.touches.length !== 2 || pinchDistance <= 0) return;
+        const dx = event.touches[0].clientX - event.touches[1].clientX;
+        const dy = event.touches[0].clientY - event.touches[1].clientY;
+        const next = Math.hypot(dx, dy);
+        if (Math.abs(next - pinchDistance) >= 18) {
+          terminal.options.fontSize = Math.max(9, Math.min(28, terminal.options.fontSize + (next > pinchDistance ? 1 : -1)));
+          pinchDistance = next;
+          fitAndReport();
+          AndroidTerminal.onFontSize(terminal.options.fontSize);
+        }
+        event.preventDefault();
+      }, { passive: false });
+      document.addEventListener('touchend', () => { pinchDistance = 0; }, { passive: true });
+
+      requestAnimationFrame(() => {
+        ready = true;
+        fitAddon.fit();
+        AndroidTerminal.onReady(terminal.cols, terminal.rows, window.innerWidth, window.innerHeight);
+        terminal.focus();
+      });
+    })();
+  </script>
+</body>
+</html>
