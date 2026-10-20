@@ -13,7 +13,8 @@
       left: 0 !important; top: 0 !important; width: 1px !important; height: 1px !important;
       z-index: 30 !important;
     }
-    .xterm-viewport { scrollbar-color: #30343a transparent; scrollbar-width: thin; }
+    .xterm-viewport { scrollbar-width: none; }
+    .xterm-viewport::-webkit-scrollbar { width: 0; height: 0; }
   </style>
 </head>
 <body>
@@ -43,10 +44,14 @@
       });
       const fitAddon = new FitAddon.FitAddon();
       terminal.loadAddon(fitAddon);
-      terminal.open(document.getElementById('terminal'));
+      const terminalElement = document.getElementById('terminal');
+      terminal.open(terminalElement);
       let locked = false;
       let ready = false;
       let readyReported = false;
+      let fitRevision = 0;
+      let fitting = false;
+      let fitTimer = 0;
 
       function bytesToBase64(bytes) {
         let binary = '';
@@ -67,9 +72,31 @@
         reportSize();
       }
 
+      function fitAfterMetricsSettle() {
+        const revision = ++fitRevision;
+        fitting = true;
+        clearTimeout(fitTimer);
+
+        // Keep the local canvas responsive during IME animation, but debounce the PTY
+        // resize until both the viewport and font metrics have stopped changing.
+        requestAnimationFrame(() => {
+          if (revision === fitRevision && !locked) fitAddon.fit();
+        });
+        fitTimer = setTimeout(() => {
+          requestAnimationFrame(() => requestAnimationFrame(() => {
+            if (revision !== fitRevision || locked) return;
+            fitAddon.fit();
+            fitting = false;
+            reportSize();
+          }));
+        }, 360);
+      }
+
       function notifyReady() {
         ready = true;
+        fitting = true;
         fitAddon.fit();
+        fitting = false;
         if (!readyReported) {
           readyReported = true;
           AndroidTerminal.onReady(terminal.cols, terminal.rows, window.innerWidth, window.innerHeight);
@@ -85,7 +112,9 @@
         for (let i = 0; i < data.length; i++) bytes[i] = data.charCodeAt(i) & 255;
         AndroidTerminal.onData(bytesToBase64(bytes));
       });
-      terminal.onResize(reportSize);
+      terminal.onResize(() => {
+        if (!fitting) reportSize();
+      });
       document.addEventListener('click', () => terminal.focus());
 
       window.ComsoTerminal = {
@@ -97,17 +126,22 @@
         },
         clear() { terminal.clear(); },
         focus() { terminal.focus(); },
-        fit() { fitAndReport(); },
+        fit() { fitAfterMetricsSettle(); },
         notifyReady,
-        setLocked(value) { locked = !!value; if (!locked) fitAndReport(); },
+        setLocked(value) { locked = !!value; if (!locked) fitAfterMetricsSettle(); },
         setFontSize(value) {
-          terminal.options.fontSize = Math.max(9, Math.min(28, Number(value) || 14));
-          if (!locked) fitAndReport();
+          const nextSize = Math.max(9, Math.min(28, Number(value) || 14));
+          terminal.options.fontSize = nextSize;
+          terminal.clearTextureAtlas();
           terminal.refresh(0, terminal.rows - 1);
+          fitAfterMetricsSettle();
         }
       };
 
-      window.addEventListener('resize', () => setTimeout(fitAndReport, 80));
+      window.addEventListener('resize', fitAfterMetricsSettle);
+      window.visualViewport?.addEventListener('resize', fitAfterMetricsSettle);
+      const terminalResizeObserver = new ResizeObserver(fitAfterMetricsSettle);
+      terminalResizeObserver.observe(terminalElement);
       document.addEventListener('touchstart', event => {
         if (event.touches.length === 1) terminal.focus();
       }, { passive: true });

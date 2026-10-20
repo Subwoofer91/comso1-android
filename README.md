@@ -1,4 +1,4 @@
-# Comso1 Android V0.4.3
+# Comso1 Android V0.4.4
 
 Comso1 是一个 Android 原生 Kotlin + Jetpack Compose 客户端，用手机聊天界面通过 SSH 连接 Ubuntu VPS，并在 VPS 上以 `codex` 用户运行 Codex CLI。
 
@@ -14,7 +14,7 @@ Comso1 是一个 Android 原生 Kotlin + Jetpack Compose 客户端，用手机�
 - 底部输入框单独响应软键盘，顶栏与整页不会随键盘重复位移。
 - 聊天顶栏使用由黑色到透明的过渡遮罩，只保留侧边栏、新对话和当前会话操作；消息滚动时可从顶栏下方经过。输入区仅圆角输入框本身遮挡消息。
 - 欢迎词保持静态，只随软键盘出现调整位置，不会因图片或位置附件改变垂直位置。输入框前的状态点以暗色、蓝色和红色分别表示未连接/连接中、连接成功和连接失败。
-- 模型与推理档位入口位于消息输入栏。点击配置面板右上角的刷新按钮后，App 会通过 SSH 调用 Codex `app-server` 的 `model/list`，读取 VPS 实际可用模型及档位。
+- 模型与推理档位入口位于消息输入栏。App 进入主界面、新对话或历史对话时会检查上次读取时间；超过 20 分钟才通过 SSH 调用 Codex `app-server` 的 `model/list`，读取 VPS 实际可用模型及档位。20 分钟内复用上次的模型目录和蓝色/红色状态；配置面板右上角的刷新按钮可随时强制覆盖缓存。
 - SSH 配置：Host、Port、Username、私钥、远端工作目录。
 - 使用 Android Keystore 加密保存 SSH 私钥。
 - 聊天模式执行：
@@ -180,7 +180,7 @@ Codex 正在运行时，点击聊天页右上角“更多”，选择“停止�
 
 ### 终端模式
 
-点击侧边栏底部“终端”进入终端模式。App 会建立独立 SSH exec channel，申请 `xterm-256color` PTY，并启动远端用户的 login shell，然后自动进入当前会话的工作目录。它是持续的交互式终端，可以运行：
+点击侧边栏底部“终端”进入终端模式。App 会建立独立 SSH shell channel，申请 `xterm-256color` PTY，并启动远端用户的 login shell，然后自动进入当前会话的工作目录。它是持续的交互式终端，可以运行：
 
 ```bash
 pwd
@@ -201,7 +201,7 @@ App 使用 SharedPreferences 保存：
 
 - VPS Host、Port、Username、工作目录。
 - 当前模型与推理强度。
-- 自动读取的模型目录仅保存在当前进程内；默认模型与档位选择会持久化。
+- 自动读取的模型目录、检查时间和最近一次成功/失败状态会持久化；默认模型与档位选择也会持久化。
 - 加密后的 SSH 私钥。
 - 加密后的标题 API Key，以及标题服务地址、模型和启用状态。
 - 会话列表：thread id、标题、标题来源、更新时间、工作目录。
@@ -352,7 +352,6 @@ codex exec resume --help
 ## 后续建议
 
 - 增加主机密钥指纹查看和单独重置入口。
-- 增加真正的交互式 PTY 终端。
 - 增加语言切换，而不是只有默认中文。
 - 支持导出/导入本地会话历史。
 - 将 transport 从 `codex exec` 扩展到未来的 `codex app-server`。

@@ -2,6 +2,8 @@ package com.codexremote.terminal
 
 import android.annotation.SuppressLint
 import android.graphics.Color
+import android.os.Handler
+import android.os.Looper
 import android.util.Base64
 import android.view.ScaleGestureDetector
 import android.view.View
@@ -63,35 +65,37 @@ class TerminalWebController {
 }
 
 private class TerminalJavascriptBridge(
-    private val onReady: (Int, Int, Int, Int) -> Unit,
-    private val onInput: (ByteArray) -> Unit,
-    private val onResize: (Int, Int, Int, Int) -> Unit,
-    private val onFontSize: (Int) -> Unit,
-    private val onError: (String) -> Unit,
+    private val readyCallback: (Int, Int, Int, Int) -> Unit,
+    private val inputCallback: (ByteArray) -> Unit,
+    private val resizeCallback: (Int, Int, Int, Int) -> Unit,
+    private val fontSizeCallback: (Int) -> Unit,
+    private val errorCallback: (String) -> Unit,
 ) {
+    private val mainHandler = Handler(Looper.getMainLooper())
+
     @JavascriptInterface
     fun onReady(columns: Int, rows: Int, widthPx: Int, heightPx: Int) {
-        onReady(columns, rows, widthPx, heightPx)
+        mainHandler.post { readyCallback(columns, rows, widthPx, heightPx) }
     }
 
     @JavascriptInterface
     fun onData(base64: String) {
-        runCatching { Base64.decode(base64, Base64.DEFAULT) }.onSuccess(onInput)
+        runCatching { Base64.decode(base64, Base64.DEFAULT) }.onSuccess(inputCallback)
     }
 
     @JavascriptInterface
     fun onResize(columns: Int, rows: Int, widthPx: Int, heightPx: Int) {
-        onResize(columns, rows, widthPx, heightPx)
+        mainHandler.post { resizeCallback(columns, rows, widthPx, heightPx) }
     }
 
     @JavascriptInterface
     fun onFontSize(size: Int) {
-        onFontSize(size)
+        mainHandler.post { fontSizeCallback(size) }
     }
 
     @JavascriptInterface
     fun onError(message: String) {
-        onError(message.take(240))
+        mainHandler.post { errorCallback(message.take(240)) }
     }
 
 }
@@ -114,15 +118,15 @@ fun TerminalWebView(
     val currentOnError = rememberUpdatedState(onError)
     val bridge = remember {
         TerminalJavascriptBridge(
-            onReady = { columns, rows, width, height ->
+            readyCallback = { columns, rows, width, height ->
                 currentOnReady.value(columns, rows, width, height)
             },
-            onInput = { currentOnInput.value(it) },
-            onResize = { columns, rows, width, height ->
+            inputCallback = { currentOnInput.value(it) },
+            resizeCallback = { columns, rows, width, height ->
                 currentOnResize.value(columns, rows, width, height)
             },
-            onFontSize = { currentOnFontSize.value(it) },
-            onError = { currentOnError.value(it) },
+            fontSizeCallback = { currentOnFontSize.value(it) },
+            errorCallback = { currentOnError.value(it) },
         )
     }
     val attachedView = remember { arrayOfNulls<WebView>(1) }
@@ -166,7 +170,7 @@ fun TerminalWebView(
                 settings.allowContentAccess = false
                 settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
                 settings.setSupportZoom(false)
-                setLayerType(View.LAYER_TYPE_SOFTWARE, null)
+                setLayerType(View.LAYER_TYPE_HARDWARE, null)
                 setOnTouchListener { _, event ->
                     if (event.pointerCount > 1 || scaleDetector.isInProgress) {
                         parent?.requestDisallowInterceptTouchEvent(true)

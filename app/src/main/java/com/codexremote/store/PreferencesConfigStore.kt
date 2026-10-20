@@ -1,7 +1,19 @@
 package com.codexremote.store
 
 import android.content.Context
+import com.codexremote.domain.CodexModelDiscoveryResult
+import com.codexremote.domain.CodexModelOption
 import com.codexremote.domain.VpsConfig
+import org.json.JSONArray
+import org.json.JSONObject
+
+data class ModelRefreshCache(
+    val checkedAtMillis: Long,
+    val successful: Boolean,
+    val models: List<CodexModelOption>,
+    val defaultModelId: String,
+    val errorMessage: String?,
+)
 
 class PreferencesConfigStore(context: Context) {
     private val prefs = context.getSharedPreferences("codex_remote_config", Context.MODE_PRIVATE)
@@ -49,6 +61,79 @@ class PreferencesConfigStore(context: Context) {
             .apply()
     }
 
+    fun loadModelRefreshCache(): ModelRefreshCache? {
+        val checkedAt = prefs.getLong(KEY_MODEL_REFRESHED_AT, 0L)
+        if (checkedAt <= 0L) return null
+        val models = runCatching {
+            val values = JSONArray(prefs.getString(KEY_MODEL_CATALOG, "[]") ?: "[]")
+            buildList {
+                for (index in 0 until values.length()) {
+                    val item = values.optJSONObject(index) ?: continue
+                    val id = item.optString("id")
+                    val efforts = item.optJSONArray("supportedEfforts")
+                    add(
+                        CodexModelOption(
+                            id = id,
+                            label = item.optString("label", id),
+                            shortLabel = item.optString("shortLabel", id),
+                            description = item.optString("description"),
+                            family = item.optString("family", "VPS 模型"),
+                            supportedEfforts = buildList {
+                                if (efforts != null) {
+                                    for (effortIndex in 0 until efforts.length()) {
+                                        efforts.optString(effortIndex).takeIf(String::isNotBlank)?.let(::add)
+                                    }
+                                }
+                            },
+                            defaultEffort = item.optString("defaultEffort"),
+                            isDefault = item.optBoolean("isDefault", false),
+                        ),
+                    )
+                }
+            }
+        }.getOrDefault(emptyList())
+        return ModelRefreshCache(
+            checkedAtMillis = checkedAt,
+            successful = prefs.getBoolean(KEY_MODEL_REFRESH_SUCCESS, false),
+            models = models,
+            defaultModelId = prefs.getString(KEY_MODEL_DEFAULT, "").orEmpty(),
+            errorMessage = prefs.getString(KEY_MODEL_REFRESH_ERROR, null),
+        )
+    }
+
+    fun saveModelRefreshSuccess(result: CodexModelDiscoveryResult, checkedAtMillis: Long) {
+        val modelsJson = JSONArray().apply {
+            result.models.forEach { model ->
+                put(
+                    JSONObject()
+                        .put("id", model.id)
+                        .put("label", model.label)
+                        .put("shortLabel", model.shortLabel)
+                        .put("description", model.description)
+                        .put("family", model.family)
+                        .put("supportedEfforts", JSONArray(model.supportedEfforts))
+                        .put("defaultEffort", model.defaultEffort)
+                        .put("isDefault", model.isDefault),
+                )
+            }
+        }
+        prefs.edit()
+            .putLong(KEY_MODEL_REFRESHED_AT, checkedAtMillis)
+            .putBoolean(KEY_MODEL_REFRESH_SUCCESS, true)
+            .putString(KEY_MODEL_CATALOG, modelsJson.toString())
+            .putString(KEY_MODEL_DEFAULT, result.defaultModelId)
+            .remove(KEY_MODEL_REFRESH_ERROR)
+            .apply()
+    }
+
+    fun saveModelRefreshFailure(message: String, checkedAtMillis: Long) {
+        prefs.edit()
+            .putLong(KEY_MODEL_REFRESHED_AT, checkedAtMillis)
+            .putBoolean(KEY_MODEL_REFRESH_SUCCESS, false)
+            .putString(KEY_MODEL_REFRESH_ERROR, message)
+            .apply()
+    }
+
     private companion object {
         const val KEY_HOST = "host"
         const val KEY_PORT = "port"
@@ -59,5 +144,10 @@ class PreferencesConfigStore(context: Context) {
         const val KEY_REASONING_EFFORT = "reasoning_effort"
         const val KEY_PRIVATE_KEY = "private_key"
         const val KEY_PRIVATE_KEY_PASSPHRASE = "private_key_passphrase"
+        const val KEY_MODEL_REFRESHED_AT = "model_refreshed_at"
+        const val KEY_MODEL_REFRESH_SUCCESS = "model_refresh_success"
+        const val KEY_MODEL_REFRESH_ERROR = "model_refresh_error"
+        const val KEY_MODEL_CATALOG = "model_catalog"
+        const val KEY_MODEL_DEFAULT = "model_default"
     }
 }

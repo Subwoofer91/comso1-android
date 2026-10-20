@@ -1,6 +1,7 @@
 package com.codexremote
 
 import android.Manifest
+import android.content.res.Configuration
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.os.Bundle
@@ -26,12 +27,14 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -125,6 +128,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -179,6 +183,7 @@ import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -209,6 +214,8 @@ private enum class ConnectionIndicator {
     Error,
 }
 
+private const val MODEL_REFRESH_INTERVAL_MS = 20L * 60L * 1_000L
+
 private val AppBackground = Color(0xFF0E0F11)
 private val AppSurface = Color(0xFF1E1F20)
 private val AppSurfaceHigh = Color(0xFF282A2D)
@@ -238,6 +245,11 @@ private fun CodexRemoteApp() {
     val ptyTerminal = remember { JschPtyTerminal(hostKeyRepository) }
     val scope = rememberCoroutineScope()
     val initialConfig = remember { configStore.load() }
+    val initialModelCache = remember { configStore.loadModelRefreshCache() }
+    val initialModelCacheFresh = remember(initialModelCache) {
+        initialModelCache != null &&
+            System.currentTimeMillis() - initialModelCache.checkedAtMillis < MODEL_REFRESH_INTERVAL_MS
+    }
     val initialEffort = remember(initialConfig.model, initialConfig.reasoningEffort) {
         CodexModelCatalog.normalizeEffort(initialConfig.model, initialConfig.reasoningEffort)
     }
@@ -254,10 +266,22 @@ private fun CodexRemoteApp() {
     var mode by rememberSaveable { mutableStateOf(MainMode.Chat) }
     var selectedModel by rememberSaveable { mutableStateOf(initialConfig.model) }
     var selectedEffort by rememberSaveable { mutableStateOf(initialEffort) }
-    var availableModels by remember { mutableStateOf(CodexModelCatalog.models) }
+    var availableModels by remember {
+        mutableStateOf(initialModelCache?.models?.takeIf { it.isNotEmpty() } ?: CodexModelCatalog.models)
+    }
     var modelsRefreshing by remember { mutableStateOf(false) }
-    var modelRefreshError by remember { mutableStateOf<String?>(null) }
-    var connectionIndicator by rememberSaveable { mutableStateOf(ConnectionIndicator.Disconnected) }
+    var modelRefreshError by remember {
+        mutableStateOf(initialModelCache?.errorMessage?.takeIf { initialModelCacheFresh && !initialModelCache.successful })
+    }
+    var connectionIndicator by rememberSaveable {
+        mutableStateOf(
+            when {
+                !initialModelCacheFresh -> ConnectionIndicator.Disconnected
+                initialModelCache?.successful == true -> ConnectionIndicator.Connected
+                else -> ConnectionIndicator.Error
+            },
+        )
+    }
     var activeJob by remember { mutableStateOf<Job?>(null) }
     var pendingLocation by remember { mutableStateOf<PhoneLocation?>(null) }
     var renameTarget by remember { mutableStateOf<ThreadRecord?>(null) }
@@ -313,12 +337,29 @@ private fun CodexRemoteApp() {
         if (result.values.any { it }) captureLocation() else status = "未授予定位权限"
     }
 
-    fun refreshModels() {
+    fun refreshModels(force: Boolean) {
         if (modelsRefreshing || running) return
+        if (!force) {
+            val cached = configStore.loadModelRefreshCache()
+            val isFresh = cached != null &&
+                System.currentTimeMillis() - cached.checkedAtMillis < MODEL_REFRESH_INTERVAL_MS
+            if (isFresh) {
+                cached.models.takeIf { it.isNotEmpty() }?.let { availableModels = it }
+                modelRefreshError = cached.errorMessage.takeIf { !cached.successful }
+                connectionIndicator = if (cached.successful) {
+                    ConnectionIndicator.Connected
+                } else {
+                    ConnectionIndicator.Error
+                }
+                return
+            }
+        }
         val config = configStore.load()
         if (config.host.isBlank() || !configStore.hasPrivateKey()) {
-            modelRefreshError = "请先完成 SSH 配置"
-            connectionIndicator = ConnectionIndicator.Disconnected
+            val message = "请先完成 SSH 配置"
+            modelRefreshError = message
+            connectionIndicator = ConnectionIndicator.Error
+            configStore.saveModelRefreshFailure(message, System.currentTimeMillis())
             return
         }
         modelsRefreshing = true
@@ -342,10 +383,13 @@ private fun CodexRemoteApp() {
                     selectedModel = nextModel
                     selectedEffort = nextEffort
                     configStore.saveModelSelection(nextModel, nextEffort)
+                    configStore.saveModelRefreshSuccess(result, System.currentTimeMillis())
                     connectionIndicator = ConnectionIndicator.Connected
                 }
                 .onFailure { error ->
-                    modelRefreshError = error.message ?: "无法读取模型目录"
+                    val message = error.message ?: "无法读取模型目录"
+                    modelRefreshError = message
+                    configStore.saveModelRefreshFailure(message, System.currentTimeMillis())
                     connectionIndicator = ConnectionIndicator.Error
                 }
             modelsRefreshing = false
@@ -356,6 +400,7 @@ private fun CodexRemoteApp() {
         if (initialEffort != initialConfig.reasoningEffort) {
             configStore.saveModelSelection(initialConfig.model, initialEffort)
         }
+        refreshModels(force = false)
     }
 
     fun currentWorkDir(): String = selectedWorkDir?.takeIf { it.isNotBlank() } ?: configStore.load().workDir
@@ -632,6 +677,7 @@ private fun CodexRemoteApp() {
         pendingLocation = null
         status = "新会话"
         mode = MainMode.Chat
+        refreshModels(force = false)
         if (closeDrawer) scope.launch { drawerState.close() }
     }
 
@@ -696,6 +742,7 @@ private fun CodexRemoteApp() {
                         pendingLocation = null
                         status = "已恢复 ${record.id.take(8)}"
                         mode = MainMode.Chat
+                        refreshModels(force = false)
                         scope.launch { drawerState.close() }
                     },
                     onSettings = {
@@ -745,7 +792,7 @@ private fun CodexRemoteApp() {
                         availableModels = availableModels,
                         modelsRefreshing = modelsRefreshing,
                         modelRefreshError = modelRefreshError,
-                        onRefreshModels = ::refreshModels,
+                        onRefreshModels = { refreshModels(force = true) },
                         onModelSelected = { model ->
                             val normalizedEffort = CodexModelCatalog.normalizeEffort(model, selectedEffort, availableModels)
                             selectedModel = model
@@ -903,6 +950,12 @@ private fun AppDrawer(
 ) {
     var actionTarget by remember { mutableStateOf<ThreadRecord?>(null) }
     var showArchived by rememberSaveable { mutableStateOf(false) }
+    val configuration = LocalConfiguration.current
+    val drawerWidth = if (configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
+        minOf(configuration.screenWidthDp.dp * 0.6f, 420.dp)
+    } else {
+        configuration.screenWidthDp.dp * 0.92f
+    }
     val activeThreads = threads.filterNot { it.archived }
     val pinnedThreads = activeThreads.filter { it.pinned }
     val recentThreads = activeThreads.filterNot { it.pinned }
@@ -910,7 +963,8 @@ private fun AppDrawer(
 
     ModalDrawerSheet(
         modifier = Modifier
-            .fillMaxWidth(0.92f)
+            .width(drawerWidth)
+            .fillMaxHeight()
             .navigationBarsPadding(),
         windowInsets = WindowInsets(0, 0, 0, 0),
         drawerContainerColor = Color(0xFF141516),
@@ -1297,6 +1351,7 @@ private fun TerminalPane(
     val scope = rememberCoroutineScope()
     val controller = remember { TerminalWebController() }
     var readySize by remember { mutableStateOf<TerminalSize?>(null) }
+    var latestSize by remember { mutableStateOf<TerminalSize?>(null) }
     var retryKey by remember { mutableStateOf(0) }
     var connectionState by remember { mutableStateOf(if (configured) "正在连接" else "请先配置 SSH") }
     var connected by remember { mutableStateOf(false) }
@@ -1306,34 +1361,40 @@ private fun TerminalPane(
     LaunchedEffect(readySize, retryKey, config.host, config.port, config.username, workDir) {
         val size = readySize ?: return@LaunchedEffect
         if (!configured) return@LaunchedEffect
-        terminal.disconnect()
-        connectionState = "正在连接"
-        connected = false
-        controller.clear()
-        try {
-            terminal.run(
-                config = config,
-                workDir = workDir,
-                initialColumns = size.columns,
-                initialRows = size.rows,
-                onConnected = {
-                    withContext(Dispatchers.Main) {
-                        connected = true
-                        connectionState = "已连接"
-                        controller.write("\r\n[Comso1] SSH PTY 已连接\r\n".toByteArray())
-                        controller.focus()
-                    }
-                },
-                onData = controller::write,
-            )
-            connectionState = "连接已关闭"
-        } catch (_: CancellationException) {
-            connectionState = "连接已关闭"
-        } catch (error: Throwable) {
-            connectionState = error.message ?: "终端连接失败"
-            controller.write("\r\n[Comso1] $connectionState\r\n".toByteArray())
-        } finally {
+        var wasConnected = false
+        while (true) {
+            val connectionSize = latestSize ?: size
+            terminal.disconnect()
+            connectionState = if (wasConnected) "正在重新连接" else "正在连接"
             connected = false
+            controller.clear()
+            try {
+                terminal.run(
+                    config = config,
+                    workDir = workDir,
+                    initialColumns = connectionSize.columns,
+                    initialRows = connectionSize.rows,
+                    onConnected = {
+                        withContext(Dispatchers.Main) {
+                            wasConnected = true
+                            connected = true
+                            connectionState = "已连接"
+                            controller.write("\r\n[Comso1] SSH PTY 已连接\r\n".toByteArray())
+                            controller.focus()
+                        }
+                    },
+                    onData = controller::write,
+                )
+            } catch (_: CancellationException) {
+                connectionState = "连接已关闭"
+                break
+            } catch (error: Throwable) {
+                connected = false
+                connectionState = error.message ?: "终端连接失败"
+                controller.write("\r\n[Comso1] $connectionState\r\n".toByteArray())
+                if (!wasConnected) break
+                delay(1_500)
+            }
         }
     }
 
@@ -1353,10 +1414,14 @@ private fun TerminalPane(
                 .padding(top = 106.dp, bottom = 54.dp),
             onReady = { columns, rows, width, height ->
                 scope.launch {
+                    val size = TerminalSize(columns, rows, width, height)
+                    latestSize = size
                     if (readySize == null) {
-                        readySize = TerminalSize(columns, rows, width, height)
+                        readySize = size
                     } else if (!locked) {
-                        terminal.resize(columns, rows, width, height)
+                        withContext(Dispatchers.IO) {
+                            terminal.resize(columns, rows, width, height)
+                        }
                     }
                     controller.setFontSize(fontSize)
                     controller.setLocked(locked)
@@ -1365,7 +1430,12 @@ private fun TerminalPane(
             },
             onInput = terminal::write,
             onResize = { columns, rows, width, height ->
-                if (!locked) terminal.resize(columns, rows, width, height)
+                latestSize = TerminalSize(columns, rows, width, height)
+                if (!locked) {
+                    scope.launch(Dispatchers.IO) {
+                        terminal.resize(columns, rows, width, height)
+                    }
+                }
             },
             onFontSize = { size -> scope.launch { fontSize = size.coerceIn(9, 28) } },
             onError = { message -> connectionState = "终端渲染失败 · $message" },
@@ -1865,6 +1935,7 @@ private fun EmptyState(greeting: String) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
+            .offset(y = (-48).dp)
             .padding(horizontal = 24.dp, vertical = 28.dp),
         contentAlignment = Alignment.Center,
     ) {
@@ -1884,7 +1955,7 @@ private fun ChatBubble(item: ChatItem) {
     when (item.role) {
         ChatRole.User -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             Surface(
-                modifier = Modifier.fillMaxWidth(0.86f),
+                modifier = Modifier.widthIn(max = 340.dp),
                 shape = RoundedCornerShape(20.dp, 20.dp, 4.dp, 20.dp),
                 color = AppSurfaceHigh,
             ) {

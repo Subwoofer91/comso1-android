@@ -10,6 +10,7 @@ local.properties
 .idea/
 outputs/
 work/
+.tmp-*.png
 *.apk
 *.aab
 *.jks
