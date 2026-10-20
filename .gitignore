@@ -1,6 +1,7 @@
 .gradle/
 .gradle-user-home/
 .gradle-fresh/
+.kotlin/
 .android/
 build/
 app/build/

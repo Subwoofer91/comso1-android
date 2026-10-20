@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.graphics.Color
 import android.util.Base64
 import android.view.ScaleGestureDetector
+import android.view.View
 import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
@@ -165,9 +166,13 @@ fun TerminalWebView(
                 settings.allowContentAccess = false
                 settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
                 settings.setSupportZoom(false)
+                setLayerType(View.LAYER_TYPE_SOFTWARE, null)
                 setOnTouchListener { _, event ->
+                    if (event.pointerCount > 1 || scaleDetector.isInProgress) {
+                        parent?.requestDisallowInterceptTouchEvent(true)
+                    }
                     scaleDetector.onTouchEvent(event)
-                    false
+                    event.pointerCount > 1 || scaleDetector.isInProgress
                 }
                 addJavascriptInterface(bridge, "AndroidTerminal")
                 webChromeClient = object : WebChromeClient() {
@@ -189,7 +194,6 @@ fun TerminalWebView(
                                 "typeof window.ComsoTerminal",
                             ) { result ->
                                 if (result == "\"object\"") {
-                                    currentOnReady.value(80, 24, view.width, view.height)
                                     view.evaluateJavascript(
                                         "window.ComsoTerminal.notifyReady && window.ComsoTerminal.notifyReady()",
                                         null,

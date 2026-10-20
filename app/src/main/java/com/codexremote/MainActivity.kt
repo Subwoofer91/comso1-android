@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.FlowRow
@@ -256,8 +257,6 @@ private fun CodexRemoteApp() {
     var availableModels by remember { mutableStateOf(CodexModelCatalog.models) }
     var modelsRefreshing by remember { mutableStateOf(false) }
     var modelRefreshError by remember { mutableStateOf<String?>(null) }
-    var welcomeConnection by rememberSaveable { mutableStateOf<String?>(null) }
-    var welcomeConnecting by rememberSaveable { mutableStateOf(false) }
     var connectionIndicator by rememberSaveable { mutableStateOf(ConnectionIndicator.Disconnected) }
     var activeJob by remember { mutableStateOf<Job?>(null) }
     var pendingLocation by remember { mutableStateOf<PhoneLocation?>(null) }
@@ -314,22 +313,17 @@ private fun CodexRemoteApp() {
         if (result.values.any { it }) captureLocation() else status = "未授予定位权限"
     }
 
-    fun refreshModels(showWelcomeStatus: Boolean = false) {
+    fun refreshModels() {
         if (modelsRefreshing || running) return
         val config = configStore.load()
         if (config.host.isBlank() || !configStore.hasPrivateKey()) {
             modelRefreshError = "请先完成 SSH 配置"
             connectionIndicator = ConnectionIndicator.Disconnected
-            if (showWelcomeStatus) welcomeConnection = "请先配置 SSH"
             return
         }
         modelsRefreshing = true
         modelRefreshError = null
         connectionIndicator = ConnectionIndicator.Connecting
-        if (showWelcomeStatus) {
-            welcomeConnecting = true
-            welcomeConnection = "正在连接并读取模型"
-        }
         scope.launch {
             runCatching { modelDiscovery.discover() }
                 .onSuccess { result ->
@@ -349,34 +343,19 @@ private fun CodexRemoteApp() {
                     selectedEffort = nextEffort
                     configStore.saveModelSelection(nextModel, nextEffort)
                     connectionIndicator = ConnectionIndicator.Connected
-                    if (showWelcomeStatus) welcomeConnection = "VPS 与模型目录已连接"
                 }
                 .onFailure { error ->
                     modelRefreshError = error.message ?: "无法读取模型目录"
                     connectionIndicator = ConnectionIndicator.Error
-                    if (showWelcomeStatus) {
-                        welcomeConnection = "连接失败 · ${error.message ?: "请检查 SSH 设置"}"
-                    }
                 }
             modelsRefreshing = false
-            if (showWelcomeStatus) welcomeConnecting = false
         }
-    }
-
-    fun toggleWelcomeConnection() {
-        if (welcomeConnecting) return
-        if (welcomeConnection != null) {
-            welcomeConnection = null
-            return
-        }
-        refreshModels(showWelcomeStatus = true)
     }
 
     LaunchedEffect(Unit) {
         if (initialEffort != initialConfig.reasoningEffort) {
             configStore.saveModelSelection(initialConfig.model, initialEffort)
         }
-        refreshModels()
     }
 
     fun currentWorkDir(): String = selectedWorkDir?.takeIf { it.isNotBlank() } ?: configStore.load().workDir
@@ -651,7 +630,6 @@ private fun CodexRemoteApp() {
         input = ""
         pendingAttachments.clear()
         pendingLocation = null
-        welcomeConnection = null
         status = "新会话"
         mode = MainMode.Chat
         if (closeDrawer) scope.launch { drawerState.close() }
@@ -802,10 +780,7 @@ private fun CodexRemoteApp() {
                         },
                         onRemoveLocation = { pendingLocation = null },
                         greeting = greeting,
-                        welcomeConnection = welcomeConnection,
-                        welcomeConnecting = welcomeConnecting,
                         connectionIndicator = connectionIndicator,
-                        onWelcomeClick = ::toggleWelcomeConnection,
                     )
                     MainMode.Terminal -> TerminalPane(
                         terminal = ptyTerminal,
@@ -833,7 +808,6 @@ private fun CodexRemoteApp() {
                 selectedWorkDir = selectedWorkDir ?: config.workDir
                 status = "设置已保存"
                 showSettings = false
-                refreshModels()
             },
         )
     }
@@ -936,16 +910,17 @@ private fun AppDrawer(
 
     ModalDrawerSheet(
         modifier = Modifier
-            .width(320.dp)
-            .statusBarsPadding()
+            .fillMaxWidth(0.92f)
             .navigationBarsPadding(),
+        windowInsets = WindowInsets(0, 0, 0, 0),
         drawerContainerColor = Color(0xFF141516),
         drawerContentColor = AppText,
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(64.dp)
+                .statusBarsPadding()
+                .height(72.dp)
                 .padding(start = 20.dp, end = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -1232,10 +1207,7 @@ private fun ChatPane(
     onAttachLocation: () -> Unit,
     onRemoveLocation: () -> Unit,
     greeting: String,
-    welcomeConnection: String?,
-    welcomeConnecting: Boolean,
     connectionIndicator: ConnectionIndicator,
-    onWelcomeClick: () -> Unit,
 ) {
     val listState = rememberLazyListState()
     val density = LocalDensity.current
@@ -1252,30 +1224,23 @@ private fun ChatPane(
             contentPadding = PaddingValues(
                 start = 16.dp,
                 end = 16.dp,
-                top = 76.dp,
+                top = 124.dp,
                 bottom = composerBottomPadding,
             ),
             verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
-            if (messages.isEmpty()) {
-                item {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .fillParentMaxHeight(),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        EmptyState(
-                            greeting = greeting,
-                            connectionStatus = welcomeConnection,
-                            connecting = welcomeConnecting,
-                            onClick = onWelcomeClick,
-                        )
-                    }
-                }
-            }
             items(messages, key = { it.id }) { item ->
                 ChatBubble(item)
+            }
+        }
+        if (messages.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .imePadding(),
+                contentAlignment = Alignment.Center,
+            ) {
+                EmptyState(greeting = greeting)
             }
         }
         Composer(
@@ -1568,7 +1533,7 @@ private fun ChatTopBar(
                     expanded = menuExpanded,
                     onDismissRequest = { menuExpanded = false },
                     alignment = Alignment.TopEnd,
-                    offset = DpOffset(x = (-22).dp, y = 72.dp),
+                    offset = DpOffset(x = (-8).dp, y = 50.dp),
                     width = 164.dp,
                 ) {
                     currentThread?.let { record ->
@@ -1896,32 +1861,16 @@ private fun ConfigurationRow(
 }
 
 @Composable
-private fun EmptyState(
-    greeting: String,
-    connectionStatus: String?,
-    connecting: Boolean,
-    onClick: () -> Unit,
-) {
-    Column(
+private fun EmptyState(greeting: String) {
+    Box(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(24.dp))
-            .clickable(enabled = !connecting, onClick = onClick)
             .padding(horizontal = 24.dp, vertical = 28.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
+        contentAlignment = Alignment.Center,
     ) {
-        if (connecting) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(24.dp),
-                color = AppBlue,
-                strokeWidth = 2.dp,
-            )
-            Spacer(Modifier.height(16.dp))
-        }
         Text(
-            connectionStatus ?: greeting,
-            color = if (connectionStatus?.startsWith("连接失败") == true) AppError else AppText,
+            greeting,
+            color = AppText,
             fontWeight = FontWeight.Normal,
             fontSize = 25.sp,
             lineHeight = 34.sp,

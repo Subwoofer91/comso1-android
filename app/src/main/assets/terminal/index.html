@@ -8,15 +8,7 @@
     html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #050607; }
     body { position: fixed; inset: 0; max-width: 100vw; contain: strict; }
     #terminal { position: absolute; inset: 0; overflow: hidden; }
-    #terminal-fallback {
-      position: absolute; inset: 0; z-index: 20; margin: 0; padding: 10px 8px 4px;
-      box-sizing: border-box; width: 100%; max-width: 100%; overflow: hidden;
-      pointer-events: none; contain: strict; color: #e7eaf0; background: #050607;
-      font-family: monospace; font-size: 14px; line-height: 1.2; letter-spacing: 0;
-    }
-    .terminal-line { display: block; width: 100%; max-width: 100%; overflow: hidden; white-space: pre; }
     .xterm { padding: 8px 8px 4px; box-sizing: border-box; }
-    .xterm .xterm-screen canvas { opacity: 0 !important; }
     .xterm .xterm-helper-textarea {
       left: 0 !important; top: 0 !important; width: 1px !important; height: 1px !important;
       z-index: 30 !important;
@@ -26,7 +18,6 @@
 </head>
 <body>
   <div id="terminal"></div>
-  <pre id="terminal-fallback"></pre>
   <script src="xterm.js"></script>
   <script src="addon-fit.js"></script>
   <script>
@@ -56,33 +47,6 @@
       let locked = false;
       let ready = false;
       let readyReported = false;
-      let renderPending = false;
-      const fallback = document.getElementById('terminal-fallback');
-
-      function renderFallback() {
-        if (renderPending) return;
-        renderPending = true;
-        requestAnimationFrame(() => {
-          renderPending = false;
-          const buffer = terminal.buffer.active;
-          const cursorRow = buffer.baseY + buffer.cursorY - buffer.viewportY;
-          const fragment = document.createDocumentFragment();
-          for (let row = 0; row < terminal.rows; row++) {
-            const line = buffer.getLine(buffer.viewportY + row);
-            let value = line ? line.translateToString(true).slice(0, terminal.cols) : '';
-            if (row === cursorRow) {
-              const cursorColumn = Math.min(buffer.cursorX, terminal.cols - 1);
-              value = value.padEnd(cursorColumn, ' ');
-              value = `${value.slice(0, cursorColumn)}▌${value.slice(cursorColumn + 1)}`;
-            }
-            const rowElement = document.createElement('span');
-            rowElement.className = 'terminal-line';
-            rowElement.textContent = value || '\u00a0';
-            fragment.appendChild(rowElement);
-          }
-          fallback.replaceChildren(fragment);
-        });
-      }
 
       function bytesToBase64(bytes) {
         let binary = '';
@@ -101,13 +65,11 @@
         if (locked) return;
         fitAddon.fit();
         reportSize();
-        renderFallback();
       }
 
       function notifyReady() {
         ready = true;
         fitAddon.fit();
-        renderFallback();
         if (!readyReported) {
           readyReported = true;
           AndroidTerminal.onReady(terminal.cols, terminal.rows, window.innerWidth, window.innerHeight);
@@ -124,9 +86,6 @@
         AndroidTerminal.onData(bytesToBase64(bytes));
       });
       terminal.onResize(reportSize);
-      terminal.onWriteParsed(renderFallback);
-      terminal.onCursorMove(renderFallback);
-      terminal.onScroll(renderFallback);
       document.addEventListener('click', () => terminal.focus());
 
       window.ComsoTerminal = {
@@ -143,9 +102,8 @@
         setLocked(value) { locked = !!value; if (!locked) fitAndReport(); },
         setFontSize(value) {
           terminal.options.fontSize = Math.max(9, Math.min(28, Number(value) || 14));
-          fallback.style.fontSize = `${terminal.options.fontSize}px`;
           if (!locked) fitAndReport();
-          else renderFallback();
+          terminal.refresh(0, terminal.rows - 1);
         }
       };
 

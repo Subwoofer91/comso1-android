@@ -1,4 +1,4 @@
-# Comso1 Android V0.4.2
+# Comso1 Android V0.4.3
 
 Comso1 是一个 Android 原生 Kotlin + Jetpack Compose 客户端，用手机聊天界面通过 SSH 连接 Ubuntu VPS，并在 VPS 上以 `codex` 用户运行 Codex CLI。
 
@@ -13,8 +13,8 @@ Comso1 是一个 Android 原生 Kotlin + Jetpack Compose 客户端，用手机�
 - 抽屉底部提供“设置”和“终端/聊天”切换。
 - 底部输入框单独响应软键盘，顶栏与整页不会随键盘重复位移。
 - 聊天顶栏使用由黑色到透明的过渡遮罩，只保留侧边栏、新对话和当前会话操作；消息滚动时可从顶栏下方经过。输入区仅圆角输入框本身遮挡消息。
-- 欢迎词可点击：App 会同时验证 SSH 并读取 VPS 的模型目录，二者均成功才显示连接成功；再次点击恢复欢迎词。输入框前的状态点以暗色、蓝色和红色分别表示未连接/连接中、连接成功和连接失败。
-- 模型与推理档位入口位于消息输入栏。App 启动、点击欢迎词和保存 SSH 设置后会通过 SSH 调用 Codex `app-server` 的 `model/list` 自动读取 VPS 实际可用模型及档位，也可在配置面板手动刷新。
+- 欢迎词保持静态，只随软键盘出现调整位置，不会因图片或位置附件改变垂直位置。输入框前的状态点以暗色、蓝色和红色分别表示未连接/连接中、连接成功和连接失败。
+- 模型与推理档位入口位于消息输入栏。点击配置面板右上角的刷新按钮后，App 会通过 SSH 调用 Codex `app-server` 的 `model/list`，读取 VPS 实际可用模型及档位。
 - SSH 配置：Host、Port、Username、私钥、远端工作目录。
 - 使用 Android Keystore 加密保存 SSH 私钥。
 - 聊天模式执行：
@@ -32,7 +32,7 @@ Comso1 是一个 Android 原生 Kotlin + Jetpack Compose 客户端，用手机�
 - 选择历史会话后，会加载本地消息；下一次发送时使用保存的 thread id 和工作目录 resume。
 - 任务运行期间锁定新建、历史选择、设置和模式切换，防止旧任务事件写入错误会话。
 - Stop/Cancel 会断开当前 SSH exec channel；远端 shell 使用 `exec` 启动 Codex，使断开信号直接到达 Codex 进程。
-- 终端模式使用真正的 SSH PTY 和持续交互式 shell，支持 ANSI/xterm-256color、光标、滚动缓冲、终端全屏程序、软键盘输入、Esc/Tab/Ctrl+C/Ctrl+D/方向键、字体缩放、尺寸锁定和重新连接。
+- 终端模式使用真正的 SSH PTY 和持续交互式 shell，支持 ANSI/xterm-256color、光标、滚动缓冲、终端全屏程序、软键盘输入、Esc/Tab/Ctrl+C/Ctrl+D/方向键、双指及按钮字体缩放、尺寸锁定和重新连接；旋转屏幕只调整 PTY 行列，不重建 SSH 会话。
 - 终端渲染使用离线打包的 xterm.js；不会访问 CDN，也不会新增公网服务。
 
 ## Android 端配置
