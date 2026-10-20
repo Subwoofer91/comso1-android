@@ -4,6 +4,8 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val projectDebugKeystore = rootProject.file(".android/debug.keystore")
+
 android {
     namespace = "com.codexremote"
     compileSdk = 35
@@ -16,7 +18,23 @@ android {
         versionName = "0.4.1"
     }
 
+    signingConfigs {
+        if (projectDebugKeystore.exists()) {
+            create("projectDebug") {
+                storeFile = projectDebugKeystore
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
+    }
+
     buildTypes {
+        debug {
+            if (projectDebugKeystore.exists()) {
+                signingConfig = signingConfigs.getByName("projectDebug")
+            }
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(
