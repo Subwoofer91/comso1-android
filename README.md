@@ -1,4 +1,4 @@
-# Comso1 Android V0.4.1
+# Comso1 Android V0.4.2
 
 Comso1 是一个 Android 原生 Kotlin + Jetpack Compose 客户端，用手机聊天界面通过 SSH 连接 Ubuntu VPS，并在 VPS 上以 `codex` 用户运行 Codex CLI。
 
@@ -240,7 +240,7 @@ app/build/outputs/apk/debug/app-debug.apk
 本任务已额外复制一份到：
 
 ```text
-outputs/comso1-v0.4.1-debug.apk
+outputs/comso1-v0.4.2-debug.apk
 ```
 
 ## 常见问题

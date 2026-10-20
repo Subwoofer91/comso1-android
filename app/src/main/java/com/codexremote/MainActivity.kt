@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -77,8 +78,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DrawerValue
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.CircularProgressIndicator
@@ -100,6 +99,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.DisposableEffect
@@ -117,6 +117,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -141,6 +142,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import androidx.core.view.WindowCompat
 import com.codexremote.domain.ChatItem
 import com.codexremote.domain.ChatRole
@@ -1381,10 +1385,14 @@ private fun TerminalPane(
             controller = controller,
             modifier = Modifier
                 .fillMaxSize()
-                .padding(top = 86.dp, bottom = 54.dp),
+                .padding(top = 106.dp, bottom = 54.dp),
             onReady = { columns, rows, width, height ->
                 scope.launch {
-                    readySize = TerminalSize(columns, rows, width, height)
+                    if (readySize == null) {
+                        readySize = TerminalSize(columns, rows, width, height)
+                    } else if (!locked) {
+                        terminal.resize(columns, rows, width, height)
+                    }
                     controller.setFontSize(fontSize)
                     controller.setLocked(locked)
                     controller.write("[Comso1] 正在打开交互式终端...\r\n".toByteArray())
@@ -1556,51 +1564,45 @@ private fun ChatTopBar(
                 ) {
                     Icon(Icons.Rounded.MoreVert, contentDescription = "更多")
                 }
-                DropdownMenu(
+                AppPopupMenu(
                     expanded = menuExpanded,
                     onDismissRequest = { menuExpanded = false },
-                    modifier = Modifier
-                        .width(224.dp)
-                        .clip(RoundedCornerShape(24.dp))
-                        .background(AppSurfaceHigh),
-                    offset = DpOffset(x = (-14).dp, y = 6.dp),
+                    alignment = Alignment.TopEnd,
+                    offset = DpOffset(x = (-22).dp, y = 72.dp),
+                    width = 164.dp,
                 ) {
                     currentThread?.let { record ->
-                        DropdownMenuItem(
-                            text = { MenuLabel(if (record.pinned) "取消置顶" else "置顶") },
-                            leadingIcon = { Icon(Icons.Rounded.PushPin, contentDescription = null) },
+                        AppPopupMenuItem(
+                            label = if (record.pinned) "取消置顶" else "置顶",
+                            icon = Icons.Rounded.PushPin,
                             onClick = {
                                 menuExpanded = false
                                 onTogglePinned(record)
                             },
-                            contentPadding = PaddingValues(horizontal = 18.dp, vertical = 5.dp),
                         )
-                        DropdownMenuItem(
-                            text = { MenuLabel("会话信息") },
-                            leadingIcon = { Icon(Icons.Rounded.Info, contentDescription = null) },
+                        AppPopupMenuItem(
+                            label = "会话信息",
+                            icon = Icons.Rounded.Info,
                             onClick = {
                                 menuExpanded = false
                                 onShowInfo(record)
                             },
-                            contentPadding = PaddingValues(horizontal = 18.dp, vertical = 5.dp),
                         )
-                        DropdownMenuItem(
-                            text = { MenuLabel("重命名") },
-                            leadingIcon = { Icon(Icons.Rounded.Edit, contentDescription = null) },
+                        AppPopupMenuItem(
+                            label = "重命名",
+                            icon = Icons.Rounded.Edit,
                             onClick = {
                                 menuExpanded = false
                                 onRename(record)
                             },
-                            contentPadding = PaddingValues(horizontal = 18.dp, vertical = 5.dp),
                         )
-                        DropdownMenuItem(
-                            text = { MenuLabel("归档") },
-                            leadingIcon = { Icon(Icons.Rounded.Archive, contentDescription = null) },
+                        AppPopupMenuItem(
+                            label = "归档",
+                            icon = Icons.Rounded.Archive,
                             onClick = {
                                 menuExpanded = false
                                 onToggleArchived(record)
                             },
-                            contentPadding = PaddingValues(horizontal = 18.dp, vertical = 5.dp),
                         )
                     }
                 }
@@ -1610,8 +1612,84 @@ private fun ChatTopBar(
 }
 
 @Composable
-private fun MenuLabel(value: String) {
-    Text(value, fontSize = 17.sp, lineHeight = 25.sp, fontWeight = FontWeight.Medium)
+private fun AppPopupMenu(
+    expanded: Boolean,
+    onDismissRequest: () -> Unit,
+    alignment: Alignment,
+    offset: DpOffset = DpOffset.Zero,
+    width: Dp,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    if (!expanded) return
+    val density = LocalDensity.current
+    Popup(
+        alignment = alignment,
+        offset = with(density) {
+            IntOffset(offset.x.roundToPx(), offset.y.roundToPx())
+        },
+        onDismissRequest = onDismissRequest,
+        properties = PopupProperties(
+            focusable = true,
+            dismissOnBackPress = true,
+            dismissOnClickOutside = true,
+        ),
+    ) {
+        Surface(
+            modifier = Modifier.width(width),
+            shape = RoundedCornerShape(28.dp),
+            color = AppSurfaceHigh,
+            tonalElevation = 0.dp,
+            shadowElevation = 10.dp,
+        ) {
+            Column(
+                modifier = Modifier.padding(vertical = 8.dp),
+                content = content,
+            )
+        }
+    }
+}
+
+@Composable
+private fun AppPopupMenuItem(
+    label: String,
+    icon: ImageVector? = null,
+    selected: Boolean = false,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 18.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        icon?.let {
+            Icon(
+                imageVector = it,
+                contentDescription = null,
+                tint = AppMuted,
+                modifier = Modifier.size(24.dp),
+            )
+            Spacer(Modifier.width(14.dp))
+        }
+        Text(
+            text = label,
+            modifier = Modifier.weight(1f),
+            fontSize = 17.sp,
+            lineHeight = 24.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+        )
+        if (selected) {
+            Spacer(Modifier.width(12.dp))
+            Icon(
+                Icons.Rounded.Check,
+                contentDescription = null,
+                tint = AppText,
+                modifier = Modifier.size(22.dp),
+            )
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -1630,6 +1708,7 @@ private fun ModelEffortPicker(
     var expanded by remember { mutableStateOf(false) }
     var modelMenuExpanded by remember { mutableStateOf(false) }
     var effortMenuExpanded by remember { mutableStateOf(false) }
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val modelOption = CodexModelCatalog.model(model, availableModels)
     val effortOptions = CodexModelCatalog.effortsFor(model, availableModels)
     val selectedEffort = effortOptions.firstOrNull { it.id == reasoningEffort } ?: effortOptions.first()
@@ -1658,6 +1737,7 @@ private fun ModelEffortPicker(
     if (expanded) {
         ModalBottomSheet(
             onDismissRequest = { expanded = false },
+            sheetState = sheetState,
             containerColor = Color(0xFF17181A),
             contentColor = AppText,
             scrimColor = Color.Black.copy(alpha = 0.58f),
@@ -1701,33 +1781,20 @@ private fun ModelEffortPicker(
                                 expanded = modelMenuExpanded,
                                 onClick = { modelMenuExpanded = !modelMenuExpanded },
                             )
-                            DropdownMenu(
+                            AppPopupMenu(
                                 expanded = modelMenuExpanded,
                                 onDismissRequest = { modelMenuExpanded = false },
-                                modifier = Modifier
-                                    .widthIn(min = 250.dp, max = 320.dp)
-                                    .clip(RoundedCornerShape(22.dp))
-                                    .background(AppSurfaceHigh),
-                                offset = DpOffset(12.dp, 0.dp),
+                                alignment = Alignment.Center,
+                                width = 250.dp,
                             ) {
                                 availableModels.forEach { option ->
-                                    DropdownMenuItem(
-                                        text = {
-                                            Text(
-                                                option.shortLabel,
-                                                fontSize = 17.sp,
-                                                lineHeight = 24.sp,
-                                                fontWeight = FontWeight.Medium,
-                                            )
-                                        },
-                                        trailingIcon = {
-                                            if (option.id == model) Icon(Icons.Rounded.Check, contentDescription = null)
-                                        },
+                                    AppPopupMenuItem(
+                                        label = option.shortLabel,
+                                        selected = option.id == model,
                                         onClick = {
                                             onModelSelected(option.id)
                                             modelMenuExpanded = false
                                         },
-                                        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 6.dp),
                                     )
                                 }
                             }
@@ -1740,35 +1807,20 @@ private fun ModelEffortPicker(
                                 expanded = effortMenuExpanded,
                                 onClick = { effortMenuExpanded = !effortMenuExpanded },
                             )
-                            DropdownMenu(
+                            AppPopupMenu(
                                 expanded = effortMenuExpanded,
                                 onDismissRequest = { effortMenuExpanded = false },
-                                modifier = Modifier
-                                    .width(210.dp)
-                                    .clip(RoundedCornerShape(22.dp))
-                                    .background(AppSurfaceHigh),
-                                offset = DpOffset(112.dp, 0.dp),
+                                alignment = Alignment.Center,
+                                width = 164.dp,
                             ) {
                                 effortOptions.forEach { option ->
-                                    DropdownMenuItem(
-                                        text = {
-                                            Text(
-                                                option.label,
-                                                fontSize = 17.sp,
-                                                lineHeight = 24.sp,
-                                                fontWeight = FontWeight.Medium,
-                                            )
-                                        },
-                                        trailingIcon = {
-                                            if (option.id == selectedEffort.id) {
-                                                Icon(Icons.Rounded.Check, contentDescription = null)
-                                            }
-                                        },
+                                    AppPopupMenuItem(
+                                        label = option.label,
+                                        selected = option.id == selectedEffort.id,
                                         onClick = {
                                             onEffortSelected(option.id)
                                             effortMenuExpanded = false
                                         },
-                                        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 6.dp),
                                     )
                                 }
                             }

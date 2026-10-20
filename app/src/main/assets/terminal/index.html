@@ -5,13 +5,28 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
   <link rel="stylesheet" href="xterm.css">
   <style>
-    html, body, #terminal { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #050607; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #050607; }
+    body { position: fixed; inset: 0; max-width: 100vw; contain: strict; }
+    #terminal { position: absolute; inset: 0; overflow: hidden; }
+    #terminal-fallback {
+      position: absolute; inset: 0; z-index: 20; margin: 0; padding: 10px 8px 4px;
+      box-sizing: border-box; width: 100%; max-width: 100%; overflow: hidden;
+      pointer-events: none; contain: strict; color: #e7eaf0; background: #050607;
+      font-family: monospace; font-size: 14px; line-height: 1.2; letter-spacing: 0;
+    }
+    .terminal-line { display: block; width: 100%; max-width: 100%; overflow: hidden; white-space: pre; }
     .xterm { padding: 8px 8px 4px; box-sizing: border-box; }
+    .xterm .xterm-screen canvas { opacity: 0 !important; }
+    .xterm .xterm-helper-textarea {
+      left: 0 !important; top: 0 !important; width: 1px !important; height: 1px !important;
+      z-index: 30 !important;
+    }
     .xterm-viewport { scrollbar-color: #30343a transparent; scrollbar-width: thin; }
   </style>
 </head>
 <body>
   <div id="terminal"></div>
+  <pre id="terminal-fallback"></pre>
   <script src="xterm.js"></script>
   <script src="addon-fit.js"></script>
   <script>
@@ -25,7 +40,7 @@
         cursorStyle: 'block',
         fontFamily: 'monospace',
         fontSize: 14,
-        lineHeight: 1.15,
+        lineHeight: 1.2,
         scrollback: 5000,
         convertEol: false,
         allowProposedApi: false,
@@ -40,7 +55,34 @@
       terminal.open(document.getElementById('terminal'));
       let locked = false;
       let ready = false;
-      let pinchDistance = 0;
+      let readyReported = false;
+      let renderPending = false;
+      const fallback = document.getElementById('terminal-fallback');
+
+      function renderFallback() {
+        if (renderPending) return;
+        renderPending = true;
+        requestAnimationFrame(() => {
+          renderPending = false;
+          const buffer = terminal.buffer.active;
+          const cursorRow = buffer.baseY + buffer.cursorY - buffer.viewportY;
+          const fragment = document.createDocumentFragment();
+          for (let row = 0; row < terminal.rows; row++) {
+            const line = buffer.getLine(buffer.viewportY + row);
+            let value = line ? line.translateToString(true).slice(0, terminal.cols) : '';
+            if (row === cursorRow) {
+              const cursorColumn = Math.min(buffer.cursorX, terminal.cols - 1);
+              value = value.padEnd(cursorColumn, ' ');
+              value = `${value.slice(0, cursorColumn)}▌${value.slice(cursorColumn + 1)}`;
+            }
+            const rowElement = document.createElement('span');
+            rowElement.className = 'terminal-line';
+            rowElement.textContent = value || '\u00a0';
+            fragment.appendChild(rowElement);
+          }
+          fallback.replaceChildren(fragment);
+        });
+      }
 
       function bytesToBase64(bytes) {
         let binary = '';
@@ -59,6 +101,20 @@
         if (locked) return;
         fitAddon.fit();
         reportSize();
+        renderFallback();
+      }
+
+      function notifyReady() {
+        ready = true;
+        fitAddon.fit();
+        renderFallback();
+        if (!readyReported) {
+          readyReported = true;
+          AndroidTerminal.onReady(terminal.cols, terminal.rows, window.innerWidth, window.innerHeight);
+        } else {
+          reportSize();
+        }
+        terminal.focus();
       }
 
       terminal.onData(data => AndroidTerminal.onData(bytesToBase64(new TextEncoder().encode(data))));
@@ -68,6 +124,10 @@
         AndroidTerminal.onData(bytesToBase64(bytes));
       });
       terminal.onResize(reportSize);
+      terminal.onWriteParsed(renderFallback);
+      terminal.onCursorMove(renderFallback);
+      terminal.onScroll(renderFallback);
+      document.addEventListener('click', () => terminal.focus());
 
       window.ComsoTerminal = {
         writeBase64(value) {
@@ -79,41 +139,23 @@
         clear() { terminal.clear(); },
         focus() { terminal.focus(); },
         fit() { fitAndReport(); },
+        notifyReady,
         setLocked(value) { locked = !!value; if (!locked) fitAndReport(); },
         setFontSize(value) {
           terminal.options.fontSize = Math.max(9, Math.min(28, Number(value) || 14));
+          fallback.style.fontSize = `${terminal.options.fontSize}px`;
           if (!locked) fitAndReport();
+          else renderFallback();
         }
       };
 
       window.addEventListener('resize', () => setTimeout(fitAndReport, 80));
       document.addEventListener('touchstart', event => {
-        if (!locked && event.touches.length === 2) {
-          const dx = event.touches[0].clientX - event.touches[1].clientX;
-          const dy = event.touches[0].clientY - event.touches[1].clientY;
-          pinchDistance = Math.hypot(dx, dy);
-        }
+        if (event.touches.length === 1) terminal.focus();
       }, { passive: true });
-      document.addEventListener('touchmove', event => {
-        if (locked || event.touches.length !== 2 || pinchDistance <= 0) return;
-        const dx = event.touches[0].clientX - event.touches[1].clientX;
-        const dy = event.touches[0].clientY - event.touches[1].clientY;
-        const next = Math.hypot(dx, dy);
-        if (Math.abs(next - pinchDistance) >= 18) {
-          terminal.options.fontSize = Math.max(9, Math.min(28, terminal.options.fontSize + (next > pinchDistance ? 1 : -1)));
-          pinchDistance = next;
-          fitAndReport();
-          AndroidTerminal.onFontSize(terminal.options.fontSize);
-        }
-        event.preventDefault();
-      }, { passive: false });
-      document.addEventListener('touchend', () => { pinchDistance = 0; }, { passive: true });
 
       requestAnimationFrame(() => {
-        ready = true;
-        fitAddon.fit();
-        AndroidTerminal.onReady(terminal.cols, terminal.rows, window.innerWidth, window.innerHeight);
-        terminal.focus();
+        notifyReady();
       });
       } catch (error) {
         AndroidTerminal.onError(error && error.message ? error.message : String(error));
