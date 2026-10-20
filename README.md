@@ -1,4 +1,4 @@
-# Comso1 Android V0.4.4
+# Comso1 Android V0.4.5
 
 Comso1 是一个 Android 原生 Kotlin + Jetpack Compose 客户端，用手机聊天界面通过 SSH 连接 Ubuntu VPS，并在 VPS 上以 `codex` 用户运行 Codex CLI。
 
@@ -32,7 +32,8 @@ Comso1 是一个 Android 原生 Kotlin + Jetpack Compose 客户端，用手机�
 - 选择历史会话后，会加载本地消息；下一次发送时使用保存的 thread id 和工作目录 resume。
 - 任务运行期间锁定新建、历史选择、设置和模式切换，防止旧任务事件写入错误会话。
 - Stop/Cancel 会断开当前 SSH exec channel；远端 shell 使用 `exec` 启动 Codex，使断开信号直接到达 Codex 进程。
-- 终端模式使用真正的 SSH PTY 和持续交互式 shell，支持 ANSI/xterm-256color、光标、滚动缓冲、终端全屏程序、软键盘输入、Esc/Tab/Ctrl+C/Ctrl+D/方向键、双指及按钮字体缩放、尺寸锁定和重新连接；旋转屏幕只调整 PTY 行列，不重建 SSH 会话。
+- 终端模式使用真正的 SSH PTY 和持续交互式 shell，支持 ANSI/xterm-256color、光标、滚动缓冲、终端全屏程序、软键盘输入、Esc/Tab/Ctrl+C/Ctrl+D/方向键、双指及按钮字体缩放、尺寸锁定和重新连接。终端区域会随软键盘收缩，键盘弹出时 PTY 行数和 xterm 网格同步更新；旋转屏幕只调整 PTY 行列，不重建 SSH 会话。
+- 终端尺寸以 xterm 的实际网格为准：连接建立前记录的网格会在 SSH 通道就绪后补齐，重连使用最新网格，并按固定间隔校正一次，避免远端 PTY 与本地列数长期不一致。
 - 终端渲染使用离线打包的 xterm.js；不会访问 CDN，也不会新增公网服务。
 
 ## Android 端配置
@@ -192,6 +193,8 @@ tmux
 ```
 
 终端底部的 `-` / `+` 调整字号；顶部锁形按钮用于锁定字号和 PTY 网格，避免旋转或手势造成尺寸变化；刷新按钮会断开并重新建立终端。底部还提供移动端常用的 Esc、Tab、Ctrl+C、Ctrl+D 和方向键。执行目录为当前会话保存的工作目录；如果没有选择会话，则使用设置里的默认工作目录。
+
+终端内容按可用空间自动伸缩：软键盘弹出时终端收缩到键盘上方，PTY 行列随之更新；横屏空间不足时会隐藏顶部栏并临时隐藏系统状态栏，让提示符保持可见。旋转屏幕只调整网格，不会重建 SSH 会话。
 
 终端会话与 Codex JSONL 会话是两条独立 SSH 连接。关闭终端页面会立即断开 PTY，不会在后台保留无人管理的 shell。
 

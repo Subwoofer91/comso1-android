@@ -46,6 +46,16 @@
       terminal.loadAddon(fitAddon);
       const terminalElement = document.getElementById('terminal');
       terminal.open(terminalElement);
+
+      // xterm falls back to a 15px scrollbar reservation when the measured scrollbar
+      // width is 0, but this viewport hides its scrollbar. Reserve nothing so the
+      // grid really spans the available width instead of wasting one or two columns.
+      try {
+        const viewport = terminal._core && terminal._core.viewport;
+        if (viewport) viewport.scrollBarWidth = 0;
+      } catch (_) {
+        // Keep the default fit behavior if the bundled xterm internals change.
+      }
       let locked = false;
       let ready = false;
       let readyReported = false;
@@ -64,12 +74,6 @@
       function reportSize() {
         if (!ready || locked) return;
         AndroidTerminal.onResize(terminal.cols, terminal.rows, window.innerWidth, window.innerHeight);
-      }
-
-      function fitAndReport() {
-        if (locked) return;
-        fitAddon.fit();
-        reportSize();
       }
 
       function fitAfterMetricsSettle() {
@@ -93,6 +97,10 @@
       }
 
       function notifyReady() {
+        if (!terminalElement.clientWidth || !terminalElement.clientHeight) {
+          requestAnimationFrame(notifyReady);
+          return;
+        }
         ready = true;
         fitting = true;
         fitAddon.fit();
@@ -142,9 +150,19 @@
       window.visualViewport?.addEventListener('resize', fitAfterMetricsSettle);
       const terminalResizeObserver = new ResizeObserver(fitAfterMetricsSettle);
       terminalResizeObserver.observe(terminalElement);
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) fitAfterMetricsSettle();
+      });
       document.addEventListener('touchstart', event => {
         if (event.touches.length === 1) terminal.focus();
       }, { passive: true });
+
+      // Re-assert the grid even when no local resize event fires. This repairs a
+      // resize that raced with the SSH handshake, and keeps the remote PTY and the
+      // xterm grid in lockstep after late layout changes.
+      setInterval(() => {
+        if (ready && !locked && !fitting) reportSize();
+      }, 1500);
 
       requestAnimationFrame(() => {
         notifyReady();

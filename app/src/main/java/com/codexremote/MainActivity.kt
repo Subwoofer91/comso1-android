@@ -1,6 +1,9 @@
 package com.codexremote
 
 import android.Manifest
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.content.res.Configuration
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
@@ -26,20 +29,25 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -82,6 +90,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.DrawerDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.CircularProgressIndicator
@@ -151,6 +160,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import com.codexremote.domain.ChatItem
 import com.codexremote.domain.ChatRole
 import com.codexremote.domain.CodexModelCatalog
@@ -183,7 +193,9 @@ import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -951,10 +963,13 @@ private fun AppDrawer(
     var actionTarget by remember { mutableStateOf<ThreadRecord?>(null) }
     var showArchived by rememberSaveable { mutableStateOf(false) }
     val configuration = LocalConfiguration.current
+    // Material3 places a closed drawer at -DrawerDefaults.MaximumDrawerWidth. A sheet wider
+    // than that cap would stay visible as a strip over the content when closed, so never
+    // exceed the same limit here.
     val drawerWidth = if (configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
-        minOf(configuration.screenWidthDp.dp * 0.6f, 420.dp)
+        minOf(configuration.screenWidthDp.dp * 0.6f, DrawerDefaults.MaximumDrawerWidth)
     } else {
-        configuration.screenWidthDp.dp * 0.92f
+        minOf(configuration.screenWidthDp.dp * 0.92f, DrawerDefaults.MaximumDrawerWidth)
     }
     val activeThreads = threads.filterNot { it.archived }
     val pinnedThreads = activeThreads.filter { it.pinned }
@@ -1350,6 +1365,7 @@ private fun TerminalPane(
 ) {
     val scope = rememberCoroutineScope()
     val controller = remember { TerminalWebController() }
+    val resizeRequests = remember { Channel<TerminalSize>(Channel.CONFLATED) }
     var readySize by remember { mutableStateOf<TerminalSize?>(null) }
     var latestSize by remember { mutableStateOf<TerminalSize?>(null) }
     var retryKey by remember { mutableStateOf(0) }
@@ -1357,6 +1373,35 @@ private fun TerminalPane(
     var connected by remember { mutableStateOf(false) }
     var locked by rememberSaveable { mutableStateOf(false) }
     var fontSize by rememberSaveable { mutableStateOf(14) }
+    val context = LocalContext.current
+    val configuration = LocalConfiguration.current
+    val density = LocalDensity.current
+    // A landscape phone has very little height left above a full IME. Keeping the
+    // app bar there would squeeze the terminal to zero rows, so hide it while typing.
+    val hideTopBar = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE &&
+        WindowInsets.ime.getBottom(density) > 0
+    val activityWindow = remember(context) { context.findActivity()?.window }
+    val insetsController = activityWindow?.let { WindowCompat.getInsetsController(it, it.decorView) }
+    LaunchedEffect(hideTopBar) {
+        if (hideTopBar) {
+            insetsController?.hide(WindowInsetsCompat.Type.statusBars())
+        } else {
+            insetsController?.show(WindowInsetsCompat.Type.statusBars())
+        }
+    }
+    DisposableEffect(Unit) {
+        onDispose { insetsController?.show(WindowInsetsCompat.Type.statusBars()) }
+    }
+
+    // Serialize PTY resizes on one worker so a burst of xterm fits cannot be applied
+    // out of order, and always apply the newest grid instead of every intermediate one.
+    LaunchedEffect(Unit) {
+        for (request in resizeRequests) {
+            withContext(Dispatchers.IO) {
+                terminal.resize(request.columns, request.rows, request.widthPx, request.heightPx)
+            }
+        }
+    }
 
     LaunchedEffect(readySize, retryKey, config.host, config.port, config.username, workDir) {
         val size = readySize ?: return@LaunchedEffect
@@ -1386,9 +1431,11 @@ private fun TerminalPane(
                     onData = controller::write,
                 )
             } catch (_: CancellationException) {
-                connectionState = "连接已关闭"
+                // The pane was disposed or a new connection owns the UI now; do not
+                // overwrite its status with a stale "closed" message.
                 break
             } catch (error: Throwable) {
+                if (!isActive) break
                 connected = false
                 connectionState = error.message ?: "终端连接失败"
                 controller.write("\r\n[Comso1] $connectionState\r\n".toByteArray())
@@ -1402,72 +1449,64 @@ private fun TerminalPane(
         onDispose { terminal.disconnect() }
     }
 
-    Box(
+    Column(
         Modifier
             .fillMaxSize()
-            .background(Color.Black),
+            .background(Color.Black)
+            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom)),
     ) {
+        if (!hideTopBar) {
+            TerminalTopBar(
+                modifier = Modifier.fillMaxWidth(),
+                status = connectionState,
+                connected = connected,
+                locked = locked,
+                onOpenDrawer = onOpenDrawer,
+                onToggleLock = {
+                    locked = !locked
+                    controller.setLocked(locked)
+                },
+                onReconnect = {
+                    terminal.disconnect()
+                    retryKey += 1
+                },
+                onClose = {
+                    terminal.disconnect()
+                    onClose()
+                },
+            )
+        }
+
         TerminalWebView(
             controller = controller,
             modifier = Modifier
-                .fillMaxSize()
-                .padding(top = 106.dp, bottom = 54.dp),
+                .weight(1f)
+                .fillMaxWidth(),
             onReady = { columns, rows, width, height ->
-                scope.launch {
-                    val size = TerminalSize(columns, rows, width, height)
-                    latestSize = size
-                    if (readySize == null) {
-                        readySize = size
-                    } else if (!locked) {
-                        withContext(Dispatchers.IO) {
-                            terminal.resize(columns, rows, width, height)
-                        }
-                    }
-                    controller.setFontSize(fontSize)
-                    controller.setLocked(locked)
-                    controller.write("[Comso1] 正在打开交互式终端...\r\n".toByteArray())
+                val size = TerminalSize(columns, rows, width, height)
+                latestSize = size
+                if (readySize == null) {
+                    readySize = size
+                } else if (!locked) {
+                    resizeRequests.trySend(size)
                 }
+                controller.setFontSize(fontSize)
+                controller.setLocked(locked)
+                controller.write("[Comso1] 正在打开交互式终端...\r\n".toByteArray())
             },
             onInput = terminal::write,
             onResize = { columns, rows, width, height ->
-                latestSize = TerminalSize(columns, rows, width, height)
-                if (!locked) {
-                    scope.launch(Dispatchers.IO) {
-                        terminal.resize(columns, rows, width, height)
-                    }
-                }
+                val size = TerminalSize(columns, rows, width, height)
+                latestSize = size
+                if (!locked) resizeRequests.trySend(size)
             },
             onFontSize = { size -> scope.launch { fontSize = size.coerceIn(9, 28) } },
             onError = { message -> connectionState = "终端渲染失败 · $message" },
         )
 
-        TerminalTopBar(
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .zIndex(2f),
-            status = connectionState,
-            connected = connected,
-            locked = locked,
-            onOpenDrawer = onOpenDrawer,
-            onToggleLock = {
-                locked = !locked
-                controller.setLocked(locked)
-            },
-            onReconnect = {
-                terminal.disconnect()
-                retryKey += 1
-            },
-            onClose = {
-                terminal.disconnect()
-                onClose()
-            },
-        )
-
         Surface(
             modifier = Modifier
-                .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .navigationBarsPadding()
                 .horizontalScroll(rememberScrollState()),
             color = Color(0xEE111317),
         ) {
@@ -2946,4 +2985,10 @@ private fun SettingsDialog(
             }
         },
     )
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }
