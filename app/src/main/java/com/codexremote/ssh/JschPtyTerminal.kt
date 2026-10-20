@@ -2,19 +2,23 @@ package com.codexremote.ssh
 
 import com.codexremote.domain.VpsConfig
 import com.codexremote.protocol.ShellCommand
-import com.jcraft.jsch.ChannelShell
+import com.jcraft.jsch.ChannelExec
 import com.jcraft.jsch.HostKeyRepository
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.Session
 import java.io.OutputStream
+import java.io.InputStream
 import java.nio.charset.StandardCharsets
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class JschPtyTerminal(
     private val hostKeyRepository: HostKeyRepository,
 ) {
-    @Volatile private var activeChannel: ChannelShell? = null
+    @Volatile private var activeChannel: ChannelExec? = null
     @Volatile private var activeSession: Session? = null
     @Volatile private var output: OutputStream? = null
 
@@ -28,7 +32,7 @@ class JschPtyTerminal(
     ) = withContext(Dispatchers.IO) {
         val session = createSession(config)
         session.connect(15_000)
-        val channel = session.openChannel("shell") as ChannelShell
+        val channel = session.openChannel("exec") as ChannelExec
         channel.setPty(true)
         channel.setPtyType(
             "xterm-256color",
@@ -38,25 +42,26 @@ class JschPtyTerminal(
             0,
         )
         runCatching { channel.setEnv("TERM", "xterm-256color") }
+        channel.setCommand(
+            "cd -- ${ShellCommand.quote(workDir)} && exec \"${'$'}{SHELL:-/bin/bash}\" -l",
+        )
 
         activeSession = session
         activeChannel = channel
         try {
             val input = channel.inputStream
+            val errorInput = channel.errStream
             val terminalOutput = channel.outputStream
             output = terminalOutput
             channel.connect(10_000)
-            terminalOutput.write(
-                "cd -- ${ShellCommand.quote(workDir)}\r".toByteArray(StandardCharsets.UTF_8),
-            )
-            terminalOutput.flush()
             onConnected()
 
-            val buffer = ByteArray(16 * 1024)
-            while (channel.isConnected && !channel.isClosed) {
-                val count = input.read(buffer)
-                if (count < 0) break
-                if (count > 0) onData(buffer.copyOf(count))
+            coroutineScope {
+                val stdoutJob = launch(Dispatchers.IO) { stream(input, onData) }
+                val stderrJob = launch(Dispatchers.IO) { stream(errorInput, onData) }
+                while (channel.isConnected && !channel.isClosed) delay(50)
+                stdoutJob.join()
+                stderrJob.join()
             }
         } finally {
             output = null
@@ -94,6 +99,15 @@ class JschPtyTerminal(
         output = null
         runCatching { activeChannel?.disconnect() }
         runCatching { activeSession?.disconnect() }
+    }
+
+    private suspend fun stream(input: InputStream, onData: suspend (ByteArray) -> Unit) {
+        val buffer = ByteArray(16 * 1024)
+        while (true) {
+            val count = runCatching { input.read(buffer) }.getOrElse { return }
+            if (count < 0) return
+            if (count > 0) onData(buffer.copyOf(count))
+        }
     }
 
     private fun createSession(config: VpsConfig): Session {

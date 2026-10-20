@@ -1,4 +1,4 @@
-# Comso1 Android V0.4.0
+# Comso1 Android V0.4.1
 
 Comso1 是一个 Android 原生 Kotlin + Jetpack Compose 客户端，用手机聊天界面通过 SSH 连接 Ubuntu VPS，并在 VPS 上以 `codex` 用户运行 Codex CLI。
 
@@ -12,8 +12,9 @@ Comso1 是一个 Android 原生 Kotlin + Jetpack Compose 客户端，用手机�
 - 覆盖式会话抽屉可完全收起，收起后只保留左上角菜单按钮。
 - 抽屉底部提供“设置”和“终端/聊天”切换。
 - 底部输入框单独响应软键盘，顶栏与整页不会随键盘重复位移。
-- 聊天顶栏为覆盖式半透明布局，只保留侧边栏、新对话和更多操作；消息滚动时可从顶栏下方经过。
-- 模型与推理档位入口位于消息输入栏。App 启动和保存 SSH 设置后会通过 SSH 调用 Codex `app-server` 的 `model/list` 自动读取 VPS 实际可用模型及档位，也可在配置面板手动刷新。
+- 聊天顶栏使用由黑色到透明的过渡遮罩，只保留侧边栏、新对话和当前会话操作；消息滚动时可从顶栏下方经过。输入区仅圆角输入框本身遮挡消息。
+- 欢迎词可点击：App 会同时验证 SSH 并读取 VPS 的模型目录，二者均成功才显示连接成功；再次点击恢复欢迎词。输入框前的状态点以暗色、蓝色和红色分别表示未连接/连接中、连接成功和连接失败。
+- 模型与推理档位入口位于消息输入栏。App 启动、点击欢迎词和保存 SSH 设置后会通过 SSH 调用 Codex `app-server` 的 `model/list` 自动读取 VPS 实际可用模型及档位，也可在配置面板手动刷新。
 - SSH 配置：Host、Port、Username、私钥、远端工作目录。
 - 使用 Android Keystore 加密保存 SSH 私钥。
 - 聊天模式执行：
@@ -65,9 +66,9 @@ Comso1 是一个 Android 原生 Kotlin + Jetpack Compose 客户端，用手机�
 
 ## 模型与推理档位
 
-点击消息输入栏内的“模型 档位”会打开底部“模型与推理”面板：
+点击消息输入栏内的“模型 档位”会打开底部配置面板。模型和思考强度分别使用下拉选择器，支持重置为 VPS 默认设置：
 
-- App 优先连接 VPS 上的 `codex app-server --listen stdio://`，按照初始化协议调用 `model/list`。
+- App 连接 VPS 上的 `codex app-server --listen stdio://`，通过 SSH stdin 发送初始化和 `model/list` JSONL 请求。
 - 模型名称、默认模型和 `supportedReasoningEfforts` 均按 VPS 返回值渲染，不再要求手机端版本表与服务端完全一致。
 - 面板右上角的刷新按钮可重新读取；远端读取失败时保留内置目录和上一次选择，聊天仍可使用。
 - 读取命令有 20 秒上限，不会因为模型服务暂时超时无限挂起。
@@ -179,7 +180,7 @@ Codex 正在运行时，点击聊天页右上角“更多”，选择“停止�
 
 ### 终端模式
 
-点击侧边栏底部“终端”进入终端模式。App 会建立独立 SSH shell channel，并申请 `xterm-256color` PTY，然后自动进入当前会话的工作目录。它是持续的交互式终端，可以运行：
+点击侧边栏底部“终端”进入终端模式。App 会建立独立 SSH exec channel，申请 `xterm-256color` PTY，并启动远端用户的 login shell，然后自动进入当前会话的工作目录。它是持续的交互式终端，可以运行：
 
 ```bash
 pwd
@@ -190,7 +191,7 @@ vim
 tmux
 ```
 
-终端顶部的 `-` / `+` 调整字号；锁形按钮用于锁定字号和 PTY 网格，避免旋转或手势造成尺寸变化；刷新按钮会断开并重新建立终端。底部提供移动端常用的 Esc、Tab、Ctrl+C、Ctrl+D 和方向键。执行目录为当前会话保存的工作目录；如果没有选择会话，则使用设置里的默认工作目录。
+终端底部的 `-` / `+` 调整字号；顶部锁形按钮用于锁定字号和 PTY 网格，避免旋转或手势造成尺寸变化；刷新按钮会断开并重新建立终端。底部还提供移动端常用的 Esc、Tab、Ctrl+C、Ctrl+D 和方向键。执行目录为当前会话保存的工作目录；如果没有选择会话，则使用设置里的默认工作目录。
 
 终端会话与 Codex JSONL 会话是两条独立 SSH 连接。关闭终端页面会立即断开 PTY，不会在后台保留无人管理的 shell。
 
@@ -239,7 +240,7 @@ app/build/outputs/apk/debug/app-debug.apk
 本任务已额外复制一份到：
 
 ```text
-outputs/comso1-v0.4.0-debug.apk
+outputs/comso1-v0.4.1-debug.apk
 ```
 
 ## 常见问题

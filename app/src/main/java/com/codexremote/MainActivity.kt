@@ -75,6 +75,7 @@ import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material.icons.rounded.Unarchive
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -92,8 +93,6 @@ import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -106,7 +105,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -118,11 +116,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalUriHandler
@@ -138,6 +139,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 import com.codexremote.domain.ChatItem
@@ -158,6 +160,7 @@ import com.codexremote.domain.TitleApiConfig
 import com.codexremote.domain.VpsConfig
 import com.codexremote.location.PhoneLocationProvider
 import com.codexremote.ssh.JschSshTransport
+import com.codexremote.ssh.JschCodexAppServerClient
 import com.codexremote.ssh.JschPtyTerminal
 import com.codexremote.store.LocalAttachmentStore
 import com.codexremote.store.PreferencesConfigStore
@@ -168,7 +171,6 @@ import com.codexremote.terminal.TerminalWebController
 import com.codexremote.terminal.TerminalWebView
 import java.text.DateFormat
 import java.util.UUID
-import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -195,6 +197,13 @@ private enum class MainMode {
     Terminal,
 }
 
+private enum class ConnectionIndicator {
+    Disconnected,
+    Connecting,
+    Connected,
+    Error,
+}
+
 private val AppBackground = Color(0xFF0E0F11)
 private val AppSurface = Color(0xFF1E1F20)
 private val AppSurfaceHigh = Color(0xFF282A2D)
@@ -218,9 +227,9 @@ private fun CodexRemoteApp() {
     val keyboardController = LocalSoftwareKeyboardController.current
     val hostKeyRepository = remember { TofuHostKeyRepository(context) }
     val sshTransport = remember { JschSshTransport(hostKeyRepository) }
-    val modelTransport = remember { JschSshTransport(hostKeyRepository) }
     val session = remember { CodexRemoteSession(configStore, threadStore, sshTransport) }
-    val modelDiscovery = remember { CodexModelDiscovery(configStore, modelTransport) }
+    val appServerClient = remember { JschCodexAppServerClient(hostKeyRepository) }
+    val modelDiscovery = remember { CodexModelDiscovery(configStore, appServerClient) }
     val ptyTerminal = remember { JschPtyTerminal(hostKeyRepository) }
     val scope = rememberCoroutineScope()
     val initialConfig = remember { configStore.load() }
@@ -243,6 +252,9 @@ private fun CodexRemoteApp() {
     var availableModels by remember { mutableStateOf(CodexModelCatalog.models) }
     var modelsRefreshing by remember { mutableStateOf(false) }
     var modelRefreshError by remember { mutableStateOf<String?>(null) }
+    var welcomeConnection by rememberSaveable { mutableStateOf<String?>(null) }
+    var welcomeConnecting by rememberSaveable { mutableStateOf(false) }
+    var connectionIndicator by rememberSaveable { mutableStateOf(ConnectionIndicator.Disconnected) }
     var activeJob by remember { mutableStateOf<Job?>(null) }
     var pendingLocation by remember { mutableStateOf<PhoneLocation?>(null) }
     var renameTarget by remember { mutableStateOf<ThreadRecord?>(null) }
@@ -298,36 +310,62 @@ private fun CodexRemoteApp() {
         if (result.values.any { it }) captureLocation() else status = "未授予定位权限"
     }
 
-    fun refreshModels() {
+    fun refreshModels(showWelcomeStatus: Boolean = false) {
         if (modelsRefreshing || running) return
         val config = configStore.load()
         if (config.host.isBlank() || !configStore.hasPrivateKey()) {
             modelRefreshError = "请先完成 SSH 配置"
+            connectionIndicator = ConnectionIndicator.Disconnected
+            if (showWelcomeStatus) welcomeConnection = "请先配置 SSH"
             return
         }
         modelsRefreshing = true
         modelRefreshError = null
+        connectionIndicator = ConnectionIndicator.Connecting
+        if (showWelcomeStatus) {
+            welcomeConnecting = true
+            welcomeConnection = "正在连接并读取模型"
+        }
         scope.launch {
             runCatching { modelDiscovery.discover() }
                 .onSuccess { result ->
                     availableModels = result.models
                     val nextModel = selectedModel.takeIf { selected ->
-                        selected.isBlank() || result.models.any { it.id == selected }
+                        selected.isNotBlank() && result.models.any { it.id == selected }
                     } ?: result.defaultModelId
+                    val preferredEffort = selectedEffort.ifBlank {
+                        result.models.firstOrNull { it.id == nextModel }?.defaultEffort.orEmpty()
+                    }
                     val nextEffort = CodexModelCatalog.normalizeEffort(
                         nextModel,
-                        selectedEffort,
+                        preferredEffort,
                         result.models,
                     )
                     selectedModel = nextModel
                     selectedEffort = nextEffort
                     configStore.saveModelSelection(nextModel, nextEffort)
+                    connectionIndicator = ConnectionIndicator.Connected
+                    if (showWelcomeStatus) welcomeConnection = "VPS 与模型目录已连接"
                 }
                 .onFailure { error ->
                     modelRefreshError = error.message ?: "无法读取模型目录"
+                    connectionIndicator = ConnectionIndicator.Error
+                    if (showWelcomeStatus) {
+                        welcomeConnection = "连接失败 · ${error.message ?: "请检查 SSH 设置"}"
+                    }
                 }
             modelsRefreshing = false
+            if (showWelcomeStatus) welcomeConnecting = false
         }
+    }
+
+    fun toggleWelcomeConnection() {
+        if (welcomeConnecting) return
+        if (welcomeConnection != null) {
+            welcomeConnection = null
+            return
+        }
+        refreshModels(showWelcomeStatus = true)
     }
 
     LaunchedEffect(Unit) {
@@ -609,9 +647,35 @@ private fun CodexRemoteApp() {
         input = ""
         pendingAttachments.clear()
         pendingLocation = null
+        welcomeConnection = null
         status = "新会话"
         mode = MainMode.Chat
         if (closeDrawer) scope.launch { drawerState.close() }
+    }
+
+    fun renameThread(record: ThreadRecord) {
+        renameTarget = record
+        renameValue = record.title
+    }
+
+    fun togglePinned(record: ThreadRecord) {
+        threadStore.setPinned(record.id, !record.pinned)
+        threads = threadStore.list()
+        status = if (record.pinned) "已取消置顶" else "已置顶"
+    }
+
+    fun toggleArchived(record: ThreadRecord) {
+        val archive = !record.archived
+        threadStore.setArchived(record.id, archive)
+        threads = threadStore.list()
+        if (archive && selectedThreadId == record.id) {
+            selectedThreadId = null
+            selectedWorkDir = configStore.load().workDir
+            messages.clear()
+            pendingAttachments.clear()
+            pendingLocation = null
+        }
+        status = if (archive) "会话已归档" else "会话已恢复"
     }
 
     MaterialTheme(
@@ -656,29 +720,10 @@ private fun CodexRemoteApp() {
                         showSettings = true
                         scope.launch { drawerState.close() }
                     },
-                    onRename = { record ->
-                        renameTarget = record
-                        renameValue = record.title
-                    },
+                    onRename = ::renameThread,
                     onShowInfo = { record -> infoTarget = record },
-                    onTogglePinned = { record ->
-                        threadStore.setPinned(record.id, !record.pinned)
-                        threads = threadStore.list()
-                        status = if (record.pinned) "已取消置顶" else "已置顶"
-                    },
-                    onToggleArchived = { record ->
-                        val archive = !record.archived
-                        threadStore.setArchived(record.id, archive)
-                        threads = threadStore.list()
-                        if (archive && selectedThreadId == record.id) {
-                            selectedThreadId = null
-                            selectedWorkDir = configStore.load().workDir
-                            messages.clear()
-                            pendingAttachments.clear()
-                            pendingLocation = null
-                        }
-                        status = if (archive) "会话已归档" else "会话已恢复"
-                    },
+                    onTogglePinned = ::togglePinned,
+                    onToggleArchived = ::toggleArchived,
                     onToggleMode = {
                         if (mode == MainMode.Terminal) ptyTerminal.disconnect()
                         mode = if (mode == MainMode.Chat) MainMode.Terminal else MainMode.Chat
@@ -706,16 +751,11 @@ private fun CodexRemoteApp() {
                         onStop = ::cancelActive,
                         onOpenDrawer = openDrawer,
                         onNewThread = { newThread(closeDrawer = false) },
-                        onOpenTerminal = {
-                            focusManager.clearFocus(force = true)
-                            keyboardController?.hide()
-                            mode = MainMode.Terminal
-                        },
-                        onOpenSettings = {
-                            focusManager.clearFocus(force = true)
-                            keyboardController?.hide()
-                            showSettings = true
-                        },
+                        currentThread = threads.firstOrNull { it.id == selectedThreadId },
+                        onRenameCurrent = ::renameThread,
+                        onShowCurrentInfo = { infoTarget = it },
+                        onToggleCurrentPinned = ::togglePinned,
+                        onToggleCurrentArchived = ::toggleArchived,
                         running = running,
                         configured = configStore.load().host.isNotBlank() && configStore.hasPrivateKey(),
                         model = selectedModel,
@@ -758,6 +798,10 @@ private fun CodexRemoteApp() {
                         },
                         onRemoveLocation = { pendingLocation = null },
                         greeting = greeting,
+                        welcomeConnection = welcomeConnection,
+                        welcomeConnecting = welcomeConnecting,
+                        connectionIndicator = connectionIndicator,
+                        onWelcomeClick = ::toggleWelcomeConnection,
                     )
                     MainMode.Terminal -> TerminalPane(
                         terminal = ptyTerminal,
@@ -793,6 +837,10 @@ private fun CodexRemoteApp() {
     renameTarget?.let { record ->
         AlertDialog(
             onDismissRequest = { renameTarget = null },
+            containerColor = AppSurfaceHigh,
+            titleContentColor = AppText,
+            textContentColor = AppText,
+            shape = RoundedCornerShape(28.dp),
             title = { Text("修改会话标题") },
             text = {
                 OutlinedTextField(
@@ -801,6 +849,7 @@ private fun CodexRemoteApp() {
                     label = { Text("标题") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
+                    colors = settingsTextFieldColors(),
                 )
             },
             confirmButton = {
@@ -822,6 +871,10 @@ private fun CodexRemoteApp() {
     infoTarget?.let { record ->
         AlertDialog(
             onDismissRequest = { infoTarget = null },
+            containerColor = AppSurfaceHigh,
+            titleContentColor = AppText,
+            textContentColor = AppText,
+            shape = RoundedCornerShape(28.dp),
             title = { Text("会话信息") },
             text = {
                 SelectionContainer {
@@ -1153,8 +1206,11 @@ private fun ChatPane(
     onStop: () -> Unit,
     onOpenDrawer: () -> Unit,
     onNewThread: () -> Unit,
-    onOpenTerminal: () -> Unit,
-    onOpenSettings: () -> Unit,
+    currentThread: ThreadRecord?,
+    onRenameCurrent: (ThreadRecord) -> Unit,
+    onShowCurrentInfo: (ThreadRecord) -> Unit,
+    onToggleCurrentPinned: (ThreadRecord) -> Unit,
+    onToggleCurrentArchived: (ThreadRecord) -> Unit,
     running: Boolean,
     configured: Boolean,
     model: String,
@@ -1172,61 +1228,90 @@ private fun ChatPane(
     onAttachLocation: () -> Unit,
     onRemoveLocation: () -> Unit,
     greeting: String,
+    welcomeConnection: String?,
+    welcomeConnecting: Boolean,
+    connectionIndicator: ConnectionIndicator,
+    onWelcomeClick: () -> Unit,
 ) {
     val listState = rememberLazyListState()
+    val density = LocalDensity.current
+    var composerHeightPx by remember { mutableStateOf(0) }
+    val composerBottomPadding = with(density) { composerHeightPx.toDp() }.coerceAtLeast(112.dp) + 12.dp
     LaunchedEffect(messages.size, messages.lastOrNull()?.text?.length) {
         if (messages.isNotEmpty()) listState.scrollToItem(messages.lastIndex)
     }
 
     Box(Modifier.fillMaxSize()) {
-        Column(Modifier.fillMaxSize()) {
-            LazyColumn(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                state = listState,
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 104.dp, bottom = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(18.dp),
-            ) {
-                if (messages.isEmpty()) {
-                    item { EmptyState(greeting) }
-                }
-                items(messages, key = { it.id }) { item ->
-                    ChatBubble(item)
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            state = listState,
+            contentPadding = PaddingValues(
+                start = 16.dp,
+                end = 16.dp,
+                top = 76.dp,
+                bottom = composerBottomPadding,
+            ),
+            verticalArrangement = Arrangement.spacedBy(18.dp),
+        ) {
+            if (messages.isEmpty()) {
+                item {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .fillParentMaxHeight(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        EmptyState(
+                            greeting = greeting,
+                            connectionStatus = welcomeConnection,
+                            connecting = welcomeConnecting,
+                            onClick = onWelcomeClick,
+                        )
+                    }
                 }
             }
-            Composer(
-                input = input,
-                running = running,
-                configured = configured,
-                onInputChange = onInputChange,
-                onSend = onSend,
-                model = model,
-                reasoningEffort = reasoningEffort,
-                availableModels = availableModels,
-                modelsRefreshing = modelsRefreshing,
-                modelRefreshError = modelRefreshError,
-                onRefreshModels = onRefreshModels,
-                onModelSelected = onModelSelected,
-                onEffortSelected = onEffortSelected,
-                attachments = pendingAttachments,
-                location = pendingLocation,
-                onPickImages = onPickImages,
-                onRemoveAttachment = onRemoveAttachment,
-                onAttachLocation = onAttachLocation,
-                onRemoveLocation = onRemoveLocation,
-            )
+            items(messages, key = { it.id }) { item ->
+                ChatBubble(item)
+            }
         }
+        Composer(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .onSizeChanged { composerHeightPx = it.height },
+            input = input,
+            running = running,
+            configured = configured,
+            connectionIndicator = connectionIndicator,
+            onInputChange = onInputChange,
+            onSend = onSend,
+            onStop = onStop,
+            model = model,
+            reasoningEffort = reasoningEffort,
+            availableModels = availableModels,
+            modelsRefreshing = modelsRefreshing,
+            modelRefreshError = modelRefreshError,
+            onRefreshModels = onRefreshModels,
+            onModelSelected = onModelSelected,
+            onEffortSelected = onEffortSelected,
+            attachments = pendingAttachments,
+            location = pendingLocation,
+            onPickImages = onPickImages,
+            onRemoveAttachment = onRemoveAttachment,
+            onAttachLocation = onAttachLocation,
+            onRemoveLocation = onRemoveLocation,
+        )
         ChatTopBar(
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .zIndex(2f),
             running = running,
-            onStop = onStop,
             onOpenDrawer = onOpenDrawer,
             onNewThread = onNewThread,
-            onOpenTerminal = onOpenTerminal,
-            onOpenSettings = onOpenSettings,
+            currentThread = currentThread,
+            onRename = onRenameCurrent,
+            onShowInfo = onShowCurrentInfo,
+            onTogglePinned = onToggleCurrentPinned,
+            onToggleArchived = onToggleCurrentArchived,
         )
     }
 }
@@ -1266,6 +1351,7 @@ private fun TerminalPane(
                     withContext(Dispatchers.Main) {
                         connected = true
                         connectionState = "已连接"
+                        controller.write("\r\n[Comso1] SSH PTY 已连接\r\n".toByteArray())
                         controller.focus()
                     }
                 },
@@ -1276,6 +1362,7 @@ private fun TerminalPane(
             connectionState = "连接已关闭"
         } catch (error: Throwable) {
             connectionState = error.message ?: "终端连接失败"
+            controller.write("\r\n[Comso1] $connectionState\r\n".toByteArray())
         } finally {
             connected = false
         }
@@ -1300,6 +1387,7 @@ private fun TerminalPane(
                     readySize = TerminalSize(columns, rows, width, height)
                     controller.setFontSize(fontSize)
                     controller.setLocked(locked)
+                    controller.write("[Comso1] 正在打开交互式终端...\r\n".toByteArray())
                 }
             },
             onInput = terminal::write,
@@ -1307,6 +1395,7 @@ private fun TerminalPane(
                 if (!locked) terminal.resize(columns, rows, width, height)
             },
             onFontSize = { size -> scope.launch { fontSize = size.coerceIn(9, 28) } },
+            onError = { message -> connectionState = "终端渲染失败 · $message" },
         )
 
         TerminalTopBar(
@@ -1315,21 +1404,8 @@ private fun TerminalPane(
                 .zIndex(2f),
             status = connectionState,
             connected = connected,
-            fontSize = fontSize,
             locked = locked,
             onOpenDrawer = onOpenDrawer,
-            onZoomOut = {
-                if (!locked) {
-                    fontSize = (fontSize - 1).coerceAtLeast(9)
-                    controller.setFontSize(fontSize)
-                }
-            },
-            onZoomIn = {
-                if (!locked) {
-                    fontSize = (fontSize + 1).coerceAtMost(28)
-                    controller.setFontSize(fontSize)
-                }
-            },
             onToggleLock = {
                 locked = !locked
                 controller.setLocked(locked)
@@ -1365,6 +1441,15 @@ private fun TerminalPane(
                 TerminalKey("↓", connected) { terminal.write("\u001B[B".toByteArray()) }
                 TerminalKey("←", connected) { terminal.write("\u001B[D".toByteArray()) }
                 TerminalKey("→", connected) { terminal.write("\u001B[C".toByteArray()) }
+                TerminalKey("−", !locked) {
+                    fontSize = (fontSize - 1).coerceAtLeast(9)
+                    controller.setFontSize(fontSize)
+                }
+                Text("$fontSize", color = AppMuted, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 6.dp))
+                TerminalKey("+", !locked) {
+                    fontSize = (fontSize + 1).coerceAtMost(28)
+                    controller.setFontSize(fontSize)
+                }
             }
         }
     }
@@ -1389,11 +1474,8 @@ private fun TerminalTopBar(
     modifier: Modifier = Modifier,
     status: String,
     connected: Boolean,
-    fontSize: Int,
     locked: Boolean,
     onOpenDrawer: () -> Unit,
-    onZoomOut: () -> Unit,
-    onZoomIn: () -> Unit,
     onToggleLock: () -> Unit,
     onReconnect: () -> Unit,
     onClose: () -> Unit,
@@ -1415,13 +1497,6 @@ private fun TerminalTopBar(
             Spacer(Modifier.width(7.dp))
             Text(status, color = AppMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        IconButton(onClick = onZoomOut, enabled = !locked) {
-            Icon(Icons.Rounded.Remove, contentDescription = "缩小终端字体")
-        }
-        Text("$fontSize", color = AppMuted, fontSize = 12.sp, textAlign = TextAlign.Center, modifier = Modifier.width(24.dp))
-        IconButton(onClick = onZoomIn, enabled = !locked) {
-            Icon(Icons.Rounded.Add, contentDescription = "放大终端字体")
-        }
         IconButton(onClick = onToggleLock) {
             Icon(if (locked) Icons.Rounded.Lock else Icons.Rounded.LockOpen, contentDescription = if (locked) "解锁终端尺寸" else "锁定终端尺寸")
         }
@@ -1438,68 +1513,105 @@ private fun TerminalTopBar(
 private fun ChatTopBar(
     modifier: Modifier = Modifier,
     running: Boolean,
-    onStop: () -> Unit,
     onOpenDrawer: () -> Unit,
     onNewThread: () -> Unit,
-    onOpenTerminal: () -> Unit,
-    onOpenSettings: () -> Unit,
+    currentThread: ThreadRecord?,
+    onRename: (ThreadRecord) -> Unit,
+    onShowInfo: (ThreadRecord) -> Unit,
+    onTogglePinned: (ThreadRecord) -> Unit,
+    onToggleArchived: (ThreadRecord) -> Unit,
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
-    Row(
+    Box(
         modifier = modifier
             .fillMaxWidth()
-            .background(AppBackground.copy(alpha = 0.84f))
-            .statusBarsPadding()
-            .height(68.dp)
-            .padding(horizontal = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .height(116.dp)
+            .background(
+                Brush.verticalGradient(
+                    0f to AppBackground,
+                    0.56f to AppBackground.copy(alpha = 0.9f),
+                    1f to Color.Transparent,
+                ),
+            ),
     ) {
-        IconButton(onClick = onOpenDrawer) {
-            Icon(Icons.Rounded.Menu, contentDescription = "打开侧边栏")
-        }
-        Spacer(Modifier.weight(1f))
-        IconButton(onClick = onNewThread, enabled = !running) {
-            Icon(Icons.Rounded.Edit, contentDescription = "新对话")
-        }
-        Box {
-            IconButton(onClick = { menuExpanded = true }) {
-                Icon(Icons.Rounded.MoreVert, contentDescription = "更多")
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .statusBarsPadding()
+                .height(68.dp)
+                .padding(start = 8.dp, end = 18.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onOpenDrawer) {
+                Icon(Icons.Rounded.Menu, contentDescription = "打开侧边栏")
             }
-            DropdownMenu(
-                expanded = menuExpanded,
-                onDismissRequest = { menuExpanded = false },
-            ) {
-                if (running) {
-                    DropdownMenuItem(
-                        text = { Text("停止当前任务") },
-                        leadingIcon = { Icon(Icons.Rounded.Stop, contentDescription = null, tint = AppError) },
-                        onClick = {
-                            menuExpanded = false
-                            onStop()
-                        },
-                    )
+            Spacer(Modifier.weight(1f))
+            IconButton(onClick = onNewThread, enabled = !running) {
+                Icon(Icons.Rounded.Edit, contentDescription = "新对话")
+            }
+            Box {
+                IconButton(
+                    onClick = { menuExpanded = true },
+                    enabled = currentThread != null && !running,
+                ) {
+                    Icon(Icons.Rounded.MoreVert, contentDescription = "更多")
                 }
-                DropdownMenuItem(
-                    text = { Text("SSH 终端") },
-                    leadingIcon = { Icon(Icons.Rounded.Terminal, contentDescription = null) },
-                    enabled = !running,
-                    onClick = {
-                        menuExpanded = false
-                        onOpenTerminal()
-                    },
-                )
-                DropdownMenuItem(
-                    text = { Text("设置") },
-                    leadingIcon = { Icon(Icons.Rounded.Settings, contentDescription = null) },
-                    enabled = !running,
-                    onClick = {
-                        menuExpanded = false
-                        onOpenSettings()
-                    },
-                )
+                DropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false },
+                    modifier = Modifier
+                        .width(224.dp)
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(AppSurfaceHigh),
+                    offset = DpOffset(x = (-14).dp, y = 6.dp),
+                ) {
+                    currentThread?.let { record ->
+                        DropdownMenuItem(
+                            text = { MenuLabel(if (record.pinned) "取消置顶" else "置顶") },
+                            leadingIcon = { Icon(Icons.Rounded.PushPin, contentDescription = null) },
+                            onClick = {
+                                menuExpanded = false
+                                onTogglePinned(record)
+                            },
+                            contentPadding = PaddingValues(horizontal = 18.dp, vertical = 5.dp),
+                        )
+                        DropdownMenuItem(
+                            text = { MenuLabel("会话信息") },
+                            leadingIcon = { Icon(Icons.Rounded.Info, contentDescription = null) },
+                            onClick = {
+                                menuExpanded = false
+                                onShowInfo(record)
+                            },
+                            contentPadding = PaddingValues(horizontal = 18.dp, vertical = 5.dp),
+                        )
+                        DropdownMenuItem(
+                            text = { MenuLabel("重命名") },
+                            leadingIcon = { Icon(Icons.Rounded.Edit, contentDescription = null) },
+                            onClick = {
+                                menuExpanded = false
+                                onRename(record)
+                            },
+                            contentPadding = PaddingValues(horizontal = 18.dp, vertical = 5.dp),
+                        )
+                        DropdownMenuItem(
+                            text = { MenuLabel("归档") },
+                            leadingIcon = { Icon(Icons.Rounded.Archive, contentDescription = null) },
+                            onClick = {
+                                menuExpanded = false
+                                onToggleArchived(record)
+                            },
+                            contentPadding = PaddingValues(horizontal = 18.dp, vertical = 5.dp),
+                        )
+                    }
+                }
             }
         }
     }
+}
+
+@Composable
+private fun MenuLabel(value: String) {
+    Text(value, fontSize = 17.sp, lineHeight = 25.sp, fontWeight = FontWeight.Medium)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -1516,12 +1628,11 @@ private fun ModelEffortPicker(
     onEffortSelected: (String) -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
+    var modelMenuExpanded by remember { mutableStateOf(false) }
+    var effortMenuExpanded by remember { mutableStateOf(false) }
     val modelOption = CodexModelCatalog.model(model, availableModels)
     val effortOptions = CodexModelCatalog.effortsFor(model, availableModels)
-    val savedEffortIndex = effortOptions.indexOfFirst { it.id == reasoningEffort }.coerceAtLeast(0)
-    var sliderValue by remember(model, reasoningEffort) { mutableFloatStateOf(savedEffortIndex.toFloat()) }
-    val sliderIndex = sliderValue.roundToInt().coerceIn(effortOptions.indices)
-    val selectedEffort = effortOptions[sliderIndex]
+    val selectedEffort = effortOptions.firstOrNull { it.id == reasoningEffort } ?: effortOptions.first()
 
     TextButton(
         onClick = { expanded = true },
@@ -1556,149 +1667,149 @@ private fun ModelEffortPicker(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 20.dp),
+                    .navigationBarsPadding()
+                    .padding(horizontal = 20.dp, vertical = 4.dp),
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("模型与推理", fontSize = 22.sp, fontWeight = FontWeight.Medium)
-                        Text(
-                            "模型与档位来自 VPS 上的 Codex",
-                            modifier = Modifier.padding(top = 4.dp),
-                            color = AppMuted,
-                            fontSize = 12.sp,
-                        )
-                    }
+                    Text("配置", modifier = Modifier.weight(1f), fontSize = 24.sp, fontWeight = FontWeight.Bold)
                     IconButton(onClick = onRefresh, enabled = !refreshing) {
                         if (refreshing) {
                             CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                         } else {
-                            Icon(Icons.Rounded.Refresh, contentDescription = "刷新模型目录")
+                            Icon(
+                                Icons.Rounded.Refresh,
+                                contentDescription = if (refreshError == null) "刷新模型目录" else "模型目录刷新失败，点击重试",
+                                tint = if (refreshError == null) AppText else AppError,
+                            )
                         }
                     }
                 }
-                refreshError?.let {
-                    Text(
-                        "自动读取失败，当前使用本地目录：$it",
-                        modifier = Modifier.padding(top = 10.dp),
-                        color = AppError,
-                        fontSize = 11.sp,
-                        lineHeight = 16.sp,
-                    )
-                }
-                Spacer(Modifier.height(14.dp))
+                Spacer(Modifier.height(18.dp))
 
-                availableModels.groupBy { it.family }.forEach { (family, options) ->
-                    Text(
-                        family,
-                        modifier = Modifier.padding(start = 12.dp, top = 8.dp, bottom = 4.dp),
-                        color = AppMuted,
-                        fontSize = 12.sp,
-                    )
-                    options.forEach { option ->
-                        val selected = option.id == model
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(if (selected) AppBlueContainer else Color.Transparent)
-                                .clickable { onModelSelected(option.id) }
-                                .padding(horizontal = 14.dp, vertical = 11.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column(Modifier.weight(1f)) {
-                                Text(
-                                    option.label,
-                                    color = if (selected) Color(0xFFD7E3FF) else AppText,
-                                    fontSize = 15.sp,
-                                    fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
-                                )
-                                Text(option.description, color = AppMuted, fontSize = 11.sp)
-                            }
-                            if (selected) {
-                                Icon(
-                                    Icons.Rounded.Check,
-                                    contentDescription = "当前模型",
-                                    tint = AppBlue,
-                                    modifier = Modifier.size(22.dp),
-                                )
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, Color(0xFF4A4D53), RoundedCornerShape(24.dp)),
+                    shape = RoundedCornerShape(24.dp),
+                    color = AppSurface,
+                ) {
+                    Column {
+                        Box {
+                            ConfigurationRow(
+                                label = "模型",
+                                value = modelOption.shortLabel,
+                                expanded = modelMenuExpanded,
+                                onClick = { modelMenuExpanded = !modelMenuExpanded },
+                            )
+                            DropdownMenu(
+                                expanded = modelMenuExpanded,
+                                onDismissRequest = { modelMenuExpanded = false },
+                                modifier = Modifier
+                                    .widthIn(min = 250.dp, max = 320.dp)
+                                    .clip(RoundedCornerShape(22.dp))
+                                    .background(AppSurfaceHigh),
+                                offset = DpOffset(12.dp, 0.dp),
+                            ) {
+                                availableModels.forEach { option ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                option.shortLabel,
+                                                fontSize = 17.sp,
+                                                lineHeight = 24.sp,
+                                                fontWeight = FontWeight.Medium,
+                                            )
+                                        },
+                                        trailingIcon = {
+                                            if (option.id == model) Icon(Icons.Rounded.Check, contentDescription = null)
+                                        },
+                                        onClick = {
+                                            onModelSelected(option.id)
+                                            modelMenuExpanded = false
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 6.dp),
+                                    )
+                                }
                             }
                         }
-                    }
-                }
-
-                HorizontalDivider(
-                    modifier = Modifier.padding(vertical = 16.dp),
-                    color = Color(0xFF34363A),
-                )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("推理强度", modifier = Modifier.weight(1f), fontSize = 16.sp, fontWeight = FontWeight.Medium)
-                    Surface(shape = RoundedCornerShape(12.dp), color = AppBlueContainer) {
-                        Text(
-                            selectedEffort.label,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
-                            color = Color(0xFFD7E3FF),
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Medium,
-                        )
+                        HorizontalDivider(Modifier.padding(horizontal = 18.dp), color = Color(0xFF3A3C40))
+                        Box {
+                            ConfigurationRow(
+                                label = "思考强度",
+                                value = selectedEffort.label,
+                                expanded = effortMenuExpanded,
+                                onClick = { effortMenuExpanded = !effortMenuExpanded },
+                            )
+                            DropdownMenu(
+                                expanded = effortMenuExpanded,
+                                onDismissRequest = { effortMenuExpanded = false },
+                                modifier = Modifier
+                                    .width(210.dp)
+                                    .clip(RoundedCornerShape(22.dp))
+                                    .background(AppSurfaceHigh),
+                                offset = DpOffset(112.dp, 0.dp),
+                            ) {
+                                effortOptions.forEach { option ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                option.label,
+                                                fontSize = 17.sp,
+                                                lineHeight = 24.sp,
+                                                fontWeight = FontWeight.Medium,
+                                            )
+                                        },
+                                        trailingIcon = {
+                                            if (option.id == selectedEffort.id) {
+                                                Icon(Icons.Rounded.Check, contentDescription = null)
+                                            }
+                                        },
+                                        onClick = {
+                                            onEffortSelected(option.id)
+                                            effortMenuExpanded = false
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 6.dp),
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
 
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 10.dp),
-                    shape = RoundedCornerShape(18.dp),
+                        .padding(top = 16.dp)
+                        .border(1.dp, Color(0xFF4A4D53), RoundedCornerShape(24.dp))
+                        .clickable {
+                            val defaultModel = availableModels.firstOrNull { it.isDefault }
+                            onModelSelected(defaultModel?.id.orEmpty())
+                            onEffortSelected(defaultModel?.defaultEffort.orEmpty())
+                        },
+                    shape = RoundedCornerShape(24.dp),
                     color = AppSurface,
                 ) {
-                    Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
-                        Slider(
-                            value = sliderValue,
-                            onValueChange = { sliderValue = it },
-                            onValueChangeFinished = { onEffortSelected(effortOptions[sliderIndex].id) },
-                            valueRange = 0f..effortOptions.lastIndex.toFloat(),
-                            steps = (effortOptions.size - 2).coerceAtLeast(0),
-                            colors = SliderDefaults.colors(
-                                thumbColor = AppBlue,
-                                activeTrackColor = AppBlue,
-                                inactiveTrackColor = Color(0xFF3A3C40),
-                                activeTickColor = AppBlueContainer,
-                                inactiveTickColor = Color(0xFF777A80),
-                            ),
-                        )
-                        Row(Modifier.fillMaxWidth()) {
-                            effortOptions.forEachIndexed { index, option ->
-                                Text(
-                                    option.label,
-                                    modifier = Modifier.weight(1f),
-                                    color = if (index == sliderIndex) AppBlue else AppMuted,
-                                    fontSize = 10.sp,
-                                    textAlign = TextAlign.Center,
-                                    fontWeight = if (index == sliderIndex) FontWeight.Medium else FontWeight.Normal,
-                                )
-                            }
-                        }
-                    }
+                    Text(
+                        "重置为默认设置",
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp),
+                        color = Color(0xFFAEC6F4),
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.Medium,
+                    )
                 }
-                Text(
-                    if (selectedEffort.id.isBlank()) {
-                        "默认档位由所选模型和 VPS 配置决定"
-                    } else {
-                        "当前模型支持 ${effortOptions.size - 1} 个可选档位"
-                    },
-                    modifier = Modifier.padding(start = 4.dp, top = 8.dp),
-                    color = AppMuted,
-                    fontSize = 11.sp,
-                )
                 Button(
                     onClick = { expanded = false },
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(top = 20.dp)
-                        .height(52.dp),
-                    shape = RoundedCornerShape(24.dp),
+                        .height(58.dp),
+                    shape = RoundedCornerShape(29.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFF2F2F2),
+                        contentColor = Color(0xFF111214),
+                    ),
                 ) {
-                    Text("完成", fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                    Text("完成", fontSize = 18.sp, fontWeight = FontWeight.Bold)
                 }
                 Spacer(Modifier.height(16.dp))
             }
@@ -1707,14 +1818,63 @@ private fun ModelEffortPicker(
 }
 
 @Composable
-private fun EmptyState(greeting: String) {
+private fun ConfigurationRow(
+    label: String,
+    value: String,
+    expanded: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 20.dp, vertical = 19.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, modifier = Modifier.weight(1f), fontSize = 18.sp, fontWeight = FontWeight.Bold)
+        Text(value, color = AppText, fontSize = 18.sp, fontWeight = FontWeight.Medium)
+        Spacer(Modifier.width(8.dp))
+        Icon(
+            if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+            contentDescription = null,
+            tint = AppMuted,
+            modifier = Modifier.size(22.dp),
+        )
+    }
+}
+
+@Composable
+private fun EmptyState(
+    greeting: String,
+    connectionStatus: String?,
+    connecting: Boolean,
+    onClick: () -> Unit,
+) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = 164.dp, start = 24.dp, end = 24.dp),
+            .clip(RoundedCornerShape(24.dp))
+            .clickable(enabled = !connecting, onClick = onClick)
+            .padding(horizontal = 24.dp, vertical = 28.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
     ) {
-        Text(greeting, fontWeight = FontWeight.Normal, fontSize = 25.sp, textAlign = TextAlign.Center)
+        if (connecting) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(24.dp),
+                color = AppBlue,
+                strokeWidth = 2.dp,
+            )
+            Spacer(Modifier.height(16.dp))
+        }
+        Text(
+            connectionStatus ?: greeting,
+            color = if (connectionStatus?.startsWith("连接失败") == true) AppError else AppText,
+            fontWeight = FontWeight.Normal,
+            fontSize = 25.sp,
+            lineHeight = 34.sp,
+            textAlign = TextAlign.Center,
+        )
     }
 }
 
@@ -2275,11 +2435,14 @@ private fun MarkdownTableRow(
 
 @Composable
 private fun Composer(
+    modifier: Modifier = Modifier,
     input: String,
     running: Boolean,
     configured: Boolean,
+    connectionIndicator: ConnectionIndicator,
     onInputChange: (String) -> Unit,
     onSend: () -> Unit,
+    onStop: () -> Unit,
     model: String,
     reasoningEffort: String,
     availableModels: List<CodexModelOption>,
@@ -2296,88 +2459,105 @@ private fun Composer(
     onRemoveLocation: () -> Unit = {},
 ) {
     val keyboard = LocalSoftwareKeyboardController.current
-    Surface(
-        modifier = Modifier
+    Column(
+        modifier = modifier
             .fillMaxWidth()
             .navigationBarsPadding()
             .imePadding()
             .padding(horizontal = 12.dp, vertical = 8.dp),
-        color = AppBackground,
     ) {
-        Column {
-            if (attachments.isNotEmpty() || location != null) {
+        if (attachments.isNotEmpty() || location != null) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                attachments.forEach { attachment ->
+                    AttachmentThumbnail(attachment, onRemove = { onRemoveAttachment(attachment) })
+                }
+                location?.let { LocationChip(it, onRemoveLocation) }
+            }
+        }
+        Surface(
+            shape = RoundedCornerShape(28.dp),
+            color = AppSurface,
+            shadowElevation = 3.dp,
+        ) {
+            Column(modifier = Modifier.padding(start = 6.dp, end = 6.dp, top = 2.dp, bottom = 6.dp)) {
+                TextField(
+                    value = input,
+                    onValueChange = onInputChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 1,
+                    maxLines = 5,
+                    placeholder = { Text("给 Comso1 发消息") },
+                    leadingIcon = { ConnectionStatusDot(connectionIndicator) },
+                    enabled = !running,
+                    colors = transparentTextFieldColors(),
+                )
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState())
-                        .padding(horizontal = 8.dp, vertical = 6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    attachments.forEach { attachment ->
-                        AttachmentThumbnail(attachment, onRemove = { onRemoveAttachment(attachment) })
+                    IconButton(onClick = onPickImages, enabled = !running) {
+                        Icon(Icons.Rounded.AttachFile, contentDescription = "添加图片", tint = AppMuted)
                     }
-                    location?.let { LocationChip(it, onRemoveLocation) }
-                }
-            }
-            Surface(
-                shape = RoundedCornerShape(28.dp),
-                color = AppSurface,
-            ) {
-                Column(modifier = Modifier.padding(start = 6.dp, end = 6.dp, top = 2.dp, bottom = 6.dp)) {
-                    TextField(
-                        value = input,
-                        onValueChange = onInputChange,
-                        modifier = Modifier.fillMaxWidth(),
-                        minLines = 1,
-                        maxLines = 5,
-                        placeholder = { Text("给 Comso1 发消息") },
-                        enabled = !running,
-                        colors = transparentTextFieldColors(),
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
+                    IconButton(onClick = onAttachLocation, enabled = !running) {
+                        Icon(
+                            Icons.Rounded.LocationOn,
+                            contentDescription = "附加当前位置",
+                            tint = if (location == null) AppMuted else AppBlue,
+                        )
+                    }
+                    Box(Modifier.weight(1f)) {
+                        ModelEffortPicker(
+                            model = model,
+                            reasoningEffort = reasoningEffort,
+                            enabled = !running,
+                            availableModels = availableModels,
+                            refreshing = modelsRefreshing,
+                            refreshError = modelRefreshError,
+                            onRefresh = onRefreshModels,
+                            onModelSelected = onModelSelected,
+                            onEffortSelected = onEffortSelected,
+                        )
+                    }
+                    FilledIconButton(
+                        onClick = {
+                            keyboard?.hide()
+                            if (running) onStop() else onSend()
+                        },
+                        enabled = running || configured &&
+                            (input.isNotBlank() || attachments.isNotEmpty() || location != null),
+                        modifier = Modifier.size(44.dp),
                     ) {
-                        IconButton(onClick = onPickImages, enabled = !running) {
-                            Icon(Icons.Rounded.AttachFile, contentDescription = "添加图片", tint = AppMuted)
-                        }
-                        IconButton(onClick = onAttachLocation, enabled = !running) {
-                            Icon(
-                                Icons.Rounded.LocationOn,
-                                contentDescription = "附加当前位置",
-                                tint = if (location == null) AppMuted else AppBlue,
-                            )
-                        }
-                        Box(Modifier.weight(1f)) {
-                            ModelEffortPicker(
-                                model = model,
-                                reasoningEffort = reasoningEffort,
-                                enabled = !running,
-                                availableModels = availableModels,
-                                refreshing = modelsRefreshing,
-                                refreshError = modelRefreshError,
-                                onRefresh = onRefreshModels,
-                                onModelSelected = onModelSelected,
-                                onEffortSelected = onEffortSelected,
-                            )
-                        }
-                        FilledIconButton(
-                            onClick = {
-                                keyboard?.hide()
-                                onSend()
-                            },
-                            enabled = !running && configured &&
-                                (input.isNotBlank() || attachments.isNotEmpty() || location != null),
-                            modifier = Modifier.size(44.dp),
-                        ) {
-                            Icon(Icons.AutoMirrored.Rounded.Send, contentDescription = "发送")
-                        }
+                        Icon(
+                            if (running) Icons.Rounded.Stop else Icons.AutoMirrored.Rounded.Send,
+                            contentDescription = if (running) "停止" else "发送",
+                        )
                     }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun ConnectionStatusDot(state: ConnectionIndicator) {
+    val color = when (state) {
+        ConnectionIndicator.Connected -> AppBlue
+        ConnectionIndicator.Error -> AppError
+        ConnectionIndicator.Disconnected,
+        ConnectionIndicator.Connecting -> Color(0xFF55585E)
+    }
+    Box(
+        Modifier
+            .size(10.dp)
+            .background(color, CircleShape),
+    )
 }
 
 @Composable

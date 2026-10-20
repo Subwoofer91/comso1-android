@@ -54,6 +54,7 @@ private class TerminalJavascriptBridge(
     private val onInput: (ByteArray) -> Unit,
     private val onResize: (Int, Int, Int, Int) -> Unit,
     private val onFontSize: (Int) -> Unit,
+    private val onError: (String) -> Unit,
 ) {
     @JavascriptInterface
     fun onReady(columns: Int, rows: Int, widthPx: Int, heightPx: Int) {
@@ -74,6 +75,11 @@ private class TerminalJavascriptBridge(
     fun onFontSize(size: Int) {
         onFontSize(size)
     }
+
+    @JavascriptInterface
+    fun onError(message: String) {
+        onError(message.take(240))
+    }
 }
 
 @SuppressLint("SetJavaScriptEnabled")
@@ -85,11 +91,13 @@ fun TerminalWebView(
     onInput: (ByteArray) -> Unit,
     onResize: (Int, Int, Int, Int) -> Unit,
     onFontSize: (Int) -> Unit,
+    onError: (String) -> Unit,
 ) {
     val currentOnReady = rememberUpdatedState(onReady)
     val currentOnInput = rememberUpdatedState(onInput)
     val currentOnResize = rememberUpdatedState(onResize)
     val currentOnFontSize = rememberUpdatedState(onFontSize)
+    val currentOnError = rememberUpdatedState(onError)
     val bridge = remember {
         TerminalJavascriptBridge(
             onReady = { columns, rows, width, height ->
@@ -100,6 +108,7 @@ fun TerminalWebView(
                 currentOnResize.value(columns, rows, width, height)
             },
             onFontSize = { currentOnFontSize.value(it) },
+            onError = { currentOnError.value(it) },
         )
     }
     val attachedView = remember { arrayOfNulls<WebView>(1) }

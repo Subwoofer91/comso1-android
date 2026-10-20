@@ -16,6 +16,10 @@
   <script src="addon-fit.js"></script>
   <script>
     (() => {
+      window.addEventListener('error', event => {
+        if (window.AndroidTerminal) AndroidTerminal.onError(event.message || '终端渲染器错误');
+      });
+      try {
       const terminal = new Terminal({
         cursorBlink: true,
         cursorStyle: 'block',
@@ -111,6 +115,9 @@
         AndroidTerminal.onReady(terminal.cols, terminal.rows, window.innerWidth, window.innerHeight);
         terminal.focus();
       });
+      } catch (error) {
+        AndroidTerminal.onError(error && error.message ? error.message : String(error));
+      }
     })();
   </script>
 </body>

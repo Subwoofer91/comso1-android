@@ -33,16 +33,21 @@ object ShellCommand {
         return loginShell("${preflight}cd ${quote(workDir)} && exec $codex </dev/null")
     }
 
-    fun codexModelList(codexCommand: String): String {
+    fun codexAppServer(codexCommand: String): String {
         val launcher = commandLauncher(codexCommand.ifBlank { "codex" })
-        val requests = listOf(
-            "{\"method\":\"initialize\",\"id\":1,\"params\":{\"clientInfo\":{\"name\":\"comso1\",\"title\":\"Comso1\",\"version\":\"0.4.0\"}}}",
+        return loginShell("exec timeout 20s $launcher app-server --listen stdio://")
+    }
+
+    fun codexInitializeRequest(): ByteArray {
+        return "{\"method\":\"initialize\",\"id\":1,\"params\":{\"clientInfo\":{\"name\":\"comso1\",\"title\":\"Comso1\",\"version\":\"0.4.1\"}}}\n"
+            .toByteArray(Charsets.UTF_8)
+    }
+
+    fun codexModelListRequest(): ByteArray {
+        return listOf(
             "{\"method\":\"initialized\",\"params\":{}}",
             "{\"method\":\"model/list\",\"id\":2,\"params\":{\"limit\":100,\"includeHidden\":false}}",
-        ).joinToString("\\n", postfix = "\\n")
-        val requestPipeline = "printf %b ${quote(requests)} | $launcher app-server --listen stdio://"
-        val command = "timeout 20s bash -c ${quote(requestPipeline)}"
-        return loginShell(command)
+        ).joinToString("\n", postfix = "\n").toByteArray(Charsets.UTF_8)
     }
 
     fun quote(value: String): String {

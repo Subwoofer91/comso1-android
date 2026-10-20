@@ -1,7 +1,6 @@
 package com.codexremote.domain
 
-import com.codexremote.protocol.ShellCommand
-import com.codexremote.ssh.SshTransport
+import com.codexremote.ssh.JschCodexAppServerClient
 import com.codexremote.store.PreferencesConfigStore
 import org.json.JSONObject
 
@@ -12,24 +11,21 @@ data class CodexModelDiscoveryResult(
 
 class CodexModelDiscovery(
     private val configStore: PreferencesConfigStore,
-    private val transport: SshTransport,
+    private val appServerClient: JschCodexAppServerClient,
 ) {
     suspend fun discover(): CodexModelDiscoveryResult {
         val config = configStore.load()
-        val lines = mutableListOf<String>()
-        val errors = mutableListOf<String>()
-        val exitCode = transport.execute(
+        val exchange = appServerClient.requestModelList(
             config = config,
-            command = ShellCommand.codexModelList(config.codexCommand),
-            onStdoutLine = { lines += it },
-            onStderrLine = { if (it.isNotBlank()) errors += it },
+            codexCommand = config.codexCommand,
         )
-        val response = lines.asSequence()
-            .mapNotNull { line -> runCatching { JSONObject(line) }.getOrNull() }
-            .firstOrNull { json -> json.optInt("id", -1) == MODEL_LIST_REQUEST_ID }
+        val response = parseJsonLine(exchange.response)
         if (response == null) {
-            val detail = errors.lastOrNull() ?: "Codex app-server 未返回 model/list"
-            error("模型目录读取失败（状态码 $exitCode）：$detail")
+            val detail = exchange.stderr.asReversed()
+                .map(::stripAnsi)
+                .firstOrNull { it.isNotBlank() && !it.contains("bubblewrap", ignoreCase = true) }
+                ?: "Codex app-server 未返回 model/list"
+            error("模型目录读取失败：$detail")
         }
         response.optJSONObject("error")?.let { error ->
             error("模型目录读取失败：${error.optString("message", error.toString())}")
@@ -92,7 +88,18 @@ class CodexModelDiscovery(
         return version?.let { "GPT-$it" } ?: "VPS 模型"
     }
 
+    private fun parseJsonLine(raw: String): JSONObject? {
+        val value = stripAnsi(raw).trim()
+        val start = value.indexOf('{')
+        if (start < 0) return null
+        return runCatching { JSONObject(value.substring(start)) }.getOrNull()
+    }
+
+    private fun stripAnsi(value: String): String {
+        return value.replace(ANSI_ESCAPE, "")
+    }
+
     private companion object {
-        const val MODEL_LIST_REQUEST_ID = 2
+        val ANSI_ESCAPE = Regex("\\u001B\\[[;?0-9]*[ -/]*[@-~]")
     }
 }

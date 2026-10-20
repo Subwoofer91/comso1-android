@@ -119,11 +119,15 @@ class CodexJsonlParserTest {
 
     @Test
     fun modelListCommandUsesInitializedAppServerProtocol() {
-        val command = ShellCommand.codexModelList("/home/codex/.local/bin/codex")
+        val command = ShellCommand.codexAppServer("/home/codex/.local/bin/codex")
+        val initialize = ShellCommand.codexInitializeRequest().decodeToString()
+        val request = ShellCommand.codexModelListRequest().decodeToString()
 
         assertTrue(command.contains("app-server --listen stdio://"))
-        assertTrue(command.contains("model/list"))
-        assertTrue(command.contains("initialized"))
         assertTrue(command.contains("timeout 20s"))
+        assertTrue(initialize.contains("initialize"))
+        assertTrue(initialize.contains("\"id\":1"))
+        assertTrue(request.contains("model/list"))
+        assertTrue(request.contains("initialized"))
     }
 }
