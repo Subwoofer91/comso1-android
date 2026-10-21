@@ -6,8 +6,8 @@ Updated: 2026-10-21 (Asia/Shanghai)
 
 - Repository: `https://github.com/Subwoofer91/comso1-android.git`
 - Branch: `main`
-- Last pushed baseline before this round: `6f260e5 feat: cache model discovery and stabilize terminal sizing`
-- Current app version in the working tree: `0.4.5` (`versionCode 17`)
+- Last pushed baseline before this round: `cfafe3f fix: keep terminal grid and PTY in sync`
+- Current app version in the working tree: `0.4.6` (`versionCode 18`)
 - Connected test device during this work: `deeb09eb` (Realme RMX3888, Android 16)
 
 ## Terminal fixes in this round
@@ -40,6 +40,35 @@ fixed. The local xterm grid and the remote PTY are now kept in lockstep:
   (360dp); the previous 420dp sheet exceeded that cap. Drawer width is now capped at the
   same 360dp.
 
+## New-session permission profile (0.4.6)
+
+Codex CLI 0.160 defaults non-interactive `codex exec` sessions to the read-only
+permission profile. The app now asks for a relaxed profile when it starts a new thread:
+
+- `ShellCommand.codexExec` adds `--approve-for-me` (automatic approval review using the
+  workspace-write sandbox), `-c sandbox_workspace_write.network_access=true`, and
+  `-c 'sandbox_workspace_write.writable_roots=["<workDir>","/srv/agent"]'`.
+- `codex exec resume` does not expose `--approve-for-me`/`--sandbox`, so resumed threads
+  keep the profile they were created with; the flags are only added to fresh sessions.
+- The rollout metadata of a new session on the device now records
+  `"sandbox_policy":{"type":"workspace-write",...,"network_access":true}` and
+  `"runtime_workspace_roots":["/home/codex","/srv/agent"]`, confirming the app-controlled
+  startup configuration reaches Codex.
+- Unit tests cover the new flags (`newSessionRequestsWorkspaceWriteProfile`) and keep
+  resume free of the exec-only flags.
+
+## Backend issue observed during this round
+
+Since about 20:00 on 2026-10-21 every **new** `codex exec` session on the VPS stalls with
+`Reconnecting... N/5 (workspace routing discovery failed)` and repeated
+`rmcp::transport` errors for `https://chatgpt.com/backend-api/ps/mcp`. This reproduces
+from the app and from manual `codex exec` runs in the SSH terminal, with `--no-daemon`,
+with `-c approval_policy=never`, with `-c approvals_reviewer=user`, and with no extra
+writable roots. The 19:59 session (before the remote config change) completed normally.
+So it is an environment/backend routing problem, not the new permission flags. The app's
+startup metadata is correct; the model reply cannot be exercised until the routing
+problem is resolved.
+
 ## Verification performed on `deeb09eb`
 
 - Initial portrait layout at font 14: xterm `41x32`; `stty size` → `32 41`.
@@ -67,6 +96,10 @@ fixed. The local xterm grid and the remote PTY are now kept in lockstep:
   grid, serialized connection, read loop, resize application.
 - `app/src/main/java/com/codexremote/MainActivity.kt`: terminal lifecycle/UI, keyboard
   insets, landscape app-bar hiding, drawer width cap, model refresh policy.
+- `app/src/main/java/com/codexremote/protocol/ShellCommand.kt`: `codex exec` command and
+  new-session permission profile.
+- `app/src/test/java/com/codexremote/protocol/CodexJsonlParserTest.kt`: command/profile
+  assertions.
 - `app/src/main/java/com/codexremote/store/PreferencesConfigStore.kt`: persisted
   model-refresh cache.
 

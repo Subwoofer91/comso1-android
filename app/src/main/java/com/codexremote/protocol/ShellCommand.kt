@@ -16,6 +16,23 @@ object ShellCommand {
         } else {
             ""
         }
+        val writableRoots = buildList {
+            if (workDir.isNotBlank()) add(workDir)
+            if (workDir != "/srv/agent") add("/srv/agent")
+        }.distinct().joinToString(separator = ",", prefix = "[", postfix = "]") { root ->
+            "\"" + root.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+        }
+        val permissionOptions = listOf(
+            // Codex defaults non-interactive exec sessions to read-only. Give a new
+            // session an explicit workspace-write profile with automatic approval
+            // review and network access, instead of depending on whatever
+            // ~/.codex/config.toml or the app-server happens to carry.
+            // --approve-for-me already selects the workspace-write sandbox; passing
+            // --sandbox alongside it is rejected by Codex CLI.
+            "--approve-for-me",
+            "-c sandbox_workspace_write.network_access=true",
+            "-c ${quote("sandbox_workspace_write.writable_roots=$writableRoots")}",
+        ).joinToString(" ")
         val options = buildList {
             add("--json")
             add("--skip-git-repo-check")
@@ -25,8 +42,11 @@ object ShellCommand {
             }
             imagePaths.forEach { add("--image ${quote(it)}") }
         }.joinToString(" ")
+        // `codex exec resume` does not expose --approve-for-me/--sandbox, so only a
+        // freshly started thread gets the explicit profile. Resumed turns continue
+        // that thread (and stay in the workspace it was created with).
         val codex = if (threadId.isNullOrBlank()) {
-            "$launcher exec $options ${quote(message)}"
+            "$launcher exec $permissionOptions $options ${quote(message)}"
         } else {
             "$launcher exec resume $options ${quote(threadId)} ${quote(message)}"
         }

@@ -69,11 +69,32 @@ class CodexJsonlParserTest {
         val fresh = ShellCommand.codexExec("/home/codex", "codex", "hello", null)
         val resumed = ShellCommand.codexExec("/home/codex/project", "codex", "again", "abc-123")
 
-        assertTrue(fresh.contains("exec --json --skip-git-repo-check"))
+        assertTrue(fresh.contains("--json --skip-git-repo-check"))
         assertTrue(resumed.contains("exec resume --json --skip-git-repo-check"))
         assertTrue(fresh.contains("&& exec"))
         assertTrue(!fresh.contains("model_reasoning_effort="))
         assertTrue(!resumed.contains("model_reasoning_effort="))
+    }
+
+    @Test
+    fun newSessionRequestsWorkspaceWriteProfile() {
+        val fresh = ShellCommand.codexExec("/home/codex", "codex", "hello", null)
+        val resumed = ShellCommand.codexExec("/home/codex/project", "codex", "again", "abc-123")
+
+        assertTrue(fresh.contains("--approve-for-me"))
+        // --approve-for-me implies workspace-write and is mutually exclusive with
+        // --sandbox, so the app must not send both.
+        assertTrue(!fresh.contains("--sandbox"))
+        assertTrue(!fresh.contains("-s workspace-write"))
+        assertTrue(fresh.contains("sandbox_workspace_write.network_access=true"))
+        assertTrue(
+            fresh,
+            fresh.contains("""sandbox_workspace_write.writable_roots=["/home/codex","/srv/agent"]"""),
+        )
+        // `codex exec resume` rejects --approve-for-me/--sandbox, so resumes must not
+        // receive the new-session profile flags.
+        assertTrue(!resumed.contains("--approve-for-me"))
+        assertTrue(!resumed.contains("-s workspace-write"))
     }
 
     @Test
@@ -95,8 +116,10 @@ class CodexJsonlParserTest {
             reasoningEffort = "high",
         )
 
-        assertTrue(fresh.contains("exec --json --skip-git-repo-check --model"))
-        assertTrue(resumed.contains("exec resume --json --skip-git-repo-check --model"))
+        assertTrue(fresh.contains("--json --skip-git-repo-check"))
+        assertTrue(resumed.contains("exec resume --json --skip-git-repo-check"))
+        assertTrue(fresh.contains("--model"))
+        assertTrue(resumed.contains("--model"))
         assertTrue(fresh.contains("gpt-6-sol"))
         assertTrue(resumed.contains("gpt-6-sol"))
         assertTrue(fresh.contains("model_reasoning_effort=high"))
