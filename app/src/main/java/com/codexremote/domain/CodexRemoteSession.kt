@@ -24,6 +24,7 @@ class CodexRemoteSession(
         message: String,
         attachments: List<MessageAttachment> = emptyList(),
         location: PhoneLocation? = null,
+        extraWritableRoots: List<String> = emptyList(),
         onEvent: suspend (CodexUiEvent) -> Unit,
     ) {
         val config = configStore.load().let { saved ->
@@ -54,6 +55,7 @@ class CodexRemoteSession(
             model = config.model,
             reasoningEffort = config.reasoningEffort,
             imagePaths = remoteImages,
+            extraWritableRoots = extraWritableRoots,
         )
         var seenThreadId = currentThreadId
         var errorReported = false

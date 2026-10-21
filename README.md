@@ -1,4 +1,4 @@
-# Comso1 Android V0.4.6
+# Comso1 Android V0.4.7
 
 Comso1 是一个 Android 原生 Kotlin + Jetpack Compose 客户端，用手机聊天界面通过 SSH 连接 Ubuntu VPS，并在 VPS 上以 `codex` 用户运行 Codex CLI。
 
@@ -32,7 +32,8 @@ Comso1 是一个 Android 原生 Kotlin + Jetpack Compose 客户端，用手机�
 - 选择历史会话后，会加载本地消息；下一次发送时使用保存的 thread id 和工作目录 resume。
 - 任务运行期间锁定新建、历史选择、设置和模式切换，防止旧任务事件写入错误会话。
 - Stop/Cancel 会断开当前 SSH exec channel；远端 shell 使用 `exec` 启动 Codex，使断开信号直接到达 Codex 进程。
-- 新会话会显式请求 Codex 的 workspace-write 权限配置（自动审批复核、网络访问、当前工作目录与 `/srv/agent` 可写），不再沿用远端默认的 read-only 启动配置；恢复历史会话时沿用该 thread 已保存的配置。
+- 新会话和续聊都会显式请求 Codex 的 workspace-write 权限配置（自动审批复核、网络访问、当前工作目录与 `/srv/agent` 可写）；续聊通过 `-c` 覆盖实现，不再退回 read-only。
+- 顶栏的锁形按钮打开“沙箱权限”：可以临时允许 Codex 修改 `~/.codex`（config.toml、MCP 配置等），仅本次 App 运行期间有效。出现“只读文件系统”类沙箱拒绝时，App 也会在回合结束后弹出审批对话框，可批准后自动重试。
 - 终端模式使用真正的 SSH PTY 和持续交互式 shell，支持 ANSI/xterm-256color、光标、滚动缓冲、终端全屏程序、软键盘输入、Esc/Tab/Ctrl+C/Ctrl+D/方向键、双指及按钮字体缩放、尺寸锁定和重新连接。终端区域会随软键盘收缩，键盘弹出时 PTY 行数和 xterm 网格同步更新；旋转屏幕只调整 PTY 行列，不重建 SSH 会话。
 - 终端尺寸以 xterm 的实际网格为准：连接建立前记录的网格会在 SSH 通道就绪后补齐，重连使用最新网格，并按固定间隔校正一次，避免远端 PTY 与本地列数长期不一致。
 - 终端渲染使用离线打包的 xterm.js；不会访问 CDN，也不会新增公网服务。

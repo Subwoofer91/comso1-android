@@ -296,6 +296,9 @@ private fun CodexRemoteApp() {
     }
     var activeJob by remember { mutableStateOf<Job?>(null) }
     var pendingLocation by remember { mutableStateOf<PhoneLocation?>(null) }
+    var sandboxApproval by remember { mutableStateOf<SandboxDenial?>(null) }
+    var allowCodexWrites by rememberSaveable { mutableStateOf(false) }
+    var showPermissions by remember { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<ThreadRecord?>(null) }
     var infoTarget by remember { mutableStateOf<ThreadRecord?>(null) }
     var renameValue by rememberSaveable { mutableStateOf("") }
@@ -538,15 +541,29 @@ private fun CodexRemoteApp() {
         status = "已取消"
     }
 
-    fun startSend() {
-        val prompt = input.trim()
-        if ((prompt.isBlank() && pendingAttachments.isEmpty() && pendingLocation == null) || running) return
+    fun startSend(
+        overridePrompt: String? = null,
+        extraWritableRoots: List<String> = emptyList(),
+    ) {
+        val isOverride = overridePrompt != null
+        val prompt = overridePrompt ?: input.trim()
+        val sendingAttachments = if (isOverride) emptyList() else pendingAttachments.toList()
+        val sendingLocation = if (isOverride) null else pendingLocation
+        if ((prompt.isBlank() && sendingAttachments.isEmpty() && sendingLocation == null) || running) return
+        if (!isOverride) {
+            input = ""
+            pendingAttachments.clear()
+            pendingLocation = null
+        }
+        sandboxApproval = null
         val workDir = currentWorkDir()
-        val sendingAttachments = pendingAttachments.toList()
-        val sendingLocation = pendingLocation
-        input = ""
-        pendingAttachments.clear()
-        pendingLocation = null
+        val effectiveExtraRoots = buildList {
+            addAll(extraWritableRoots)
+            if (allowCodexWrites) {
+                val rootDir = workDir.trimEnd('/')
+                if (rootDir.isNotBlank()) add("$rootDir/.codex")
+            }
+        }.distinct()
         messages += ChatItem(
             id = UUID.randomUUID().toString(),
             role = ChatRole.User,
@@ -566,6 +583,7 @@ private fun CodexRemoteApp() {
                     message = prompt.ifBlank { "请查看我附加的内容。" },
                     attachments = sendingAttachments,
                     location = sendingLocation,
+                    extraWritableRoots = effectiveExtraRoots,
                 ) { event ->
                     withContext(Dispatchers.Main) {
                         when (event) {
@@ -618,6 +636,17 @@ private fun CodexRemoteApp() {
                                         },
                                     ),
                                 )
+                                val denial = detectSandboxDenial(event.command, event.output)
+                                if (denial != null) {
+                                    sandboxApproval = denial
+                                } else if (event.exitCode == 0) {
+                                    // Codex's automatic reviewer retries the blocked command
+                                    // in place; a successful identical command means the
+                                    // escalation was resolved and no manual approval is needed.
+                                    sandboxApproval?.takeIf { it.command == event.command }?.let {
+                                        sandboxApproval = null
+                                    }
+                                }
                                 persistHistory()
                             }
                             is CodexUiEvent.Error -> {
@@ -676,6 +705,15 @@ private fun CodexRemoteApp() {
                 if (completedNormally) selectedThreadId?.let { generateTitleIfNeeded(it) }
             }
         }
+    }
+
+    fun approveSandboxAndRetry(denial: SandboxDenial) {
+        if (running) return
+        sandboxApproval = null
+        startSend(
+            overridePrompt = "我已在 App 中批准写入 ${denial.path}，请重试刚才因沙箱只读失败的操作。",
+            extraWritableRoots = listOf(denial.parentDir),
+        )
     }
 
     fun newThread(closeDrawer: Boolean = true) {
@@ -788,7 +826,7 @@ private fun CodexRemoteApp() {
                         messages = messages,
                         input = input,
                         onInputChange = { input = it },
-                        onSend = ::startSend,
+                        onSend = { startSend() },
                         onStop = ::cancelActive,
                         onOpenDrawer = openDrawer,
                         onNewThread = { newThread(closeDrawer = false) },
@@ -797,6 +835,8 @@ private fun CodexRemoteApp() {
                         onShowCurrentInfo = { infoTarget = it },
                         onToggleCurrentPinned = ::togglePinned,
                         onToggleCurrentArchived = ::toggleArchived,
+                        allowCodexWrites = allowCodexWrites,
+                        onOpenPermissions = { showPermissions = true },
                         running = running,
                         configured = configStore.load().host.isNotBlank() && configStore.hasPrivateKey(),
                         model = selectedModel,
@@ -933,6 +973,88 @@ private fun CodexRemoteApp() {
             },
         )
     }
+
+    if (!running) {
+        sandboxApproval?.let { denial ->
+            AlertDialog(
+                onDismissRequest = { sandboxApproval = null },
+                containerColor = AppSurfaceHigh,
+                titleContentColor = AppText,
+                textContentColor = AppText,
+                shape = RoundedCornerShape(28.dp),
+                title = { Text("允许写入受保护路径？") },
+                text = {
+                    Text(
+                        "Codex 被沙箱的只读规则挡住了：\n\n${denial.path}\n\n" +
+                            "批准后会把该目录加入本次可写根目录，并让 Codex 重试刚才的操作。",
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = { approveSandboxAndRetry(denial) }) {
+                        Text("允许并重试", color = Color(0xFFF4F7FF))
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { sandboxApproval = null }) {
+                        Text("取消", color = Color(0xFFC2D1EA))
+                    }
+                },
+            )
+        }
+    }
+
+    if (showPermissions) {
+        PermissionsDialog(
+            allowCodexWrites = allowCodexWrites,
+            onDismiss = { showPermissions = false },
+            onToggle = { allowCodexWrites = it },
+        )
+    }
+}
+
+@Composable
+private fun PermissionsDialog(
+    allowCodexWrites: Boolean,
+    onDismiss: () -> Unit,
+    onToggle: (Boolean) -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = AppSurfaceHigh,
+        titleContentColor = AppText,
+        textContentColor = AppText,
+        shape = RoundedCornerShape(28.dp),
+        title = { Text("沙箱权限") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    "Codex 默认只能写入工作目录和 /srv/agent；~/.codex 等配置目录始终是只读的。",
+                    fontSize = 14.sp,
+                    lineHeight = 21.sp,
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text("允许修改 ~/.codex", fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                        Text(
+                            "用于修改 config.toml、MCP 配置等；仅本次 App 运行期间有效。",
+                            color = AppMuted,
+                            fontSize = 12.sp,
+                            lineHeight = 17.sp,
+                        )
+                    }
+                    Switch(checked = allowCodexWrites, onCheckedChange = onToggle)
+                }
+                Text(
+                    "开启后，新消息会把 ~/.codex 作为额外可写根目录传给 Codex。",
+                    color = AppMuted,
+                    fontSize = 12.sp,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("完成") }
+        },
+    )
 }
 
 @Composable
@@ -1259,6 +1381,8 @@ private fun ChatPane(
     onShowCurrentInfo: (ThreadRecord) -> Unit,
     onToggleCurrentPinned: (ThreadRecord) -> Unit,
     onToggleCurrentArchived: (ThreadRecord) -> Unit,
+    allowCodexWrites: Boolean,
+    onOpenPermissions: () -> Unit,
     running: Boolean,
     configured: Boolean,
     model: String,
@@ -1350,6 +1474,8 @@ private fun ChatPane(
             onShowInfo = onShowCurrentInfo,
             onTogglePinned = onToggleCurrentPinned,
             onToggleArchived = onToggleCurrentArchived,
+            allowCodexWrites = allowCodexWrites,
+            onOpenPermissions = onOpenPermissions,
         )
     }
 }
@@ -1602,6 +1728,8 @@ private fun ChatTopBar(
     onShowInfo: (ThreadRecord) -> Unit,
     onTogglePinned: (ThreadRecord) -> Unit,
     onToggleArchived: (ThreadRecord) -> Unit,
+    allowCodexWrites: Boolean,
+    onOpenPermissions: () -> Unit,
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
     Box(
@@ -1630,6 +1758,13 @@ private fun ChatTopBar(
             Spacer(Modifier.weight(1f))
             IconButton(onClick = onNewThread, enabled = !running) {
                 Icon(Icons.Rounded.Edit, contentDescription = "新对话")
+            }
+            IconButton(onClick = onOpenPermissions, enabled = !running) {
+                Icon(
+                    imageVector = if (allowCodexWrites) Icons.Rounded.LockOpen else Icons.Rounded.Lock,
+                    contentDescription = "沙箱权限",
+                    tint = if (allowCodexWrites) AppBlue else AppMuted,
+                )
             }
             Box {
                 IconButton(
@@ -2991,4 +3126,22 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
     is ContextWrapper -> baseContext.findActivity()
     else -> null
+}
+
+internal data class SandboxDenial(
+    val path: String,
+    val parentDir: String,
+    val command: String,
+)
+
+private val sandboxDenialRegex = Regex(
+    """(/[^\s:]+): (?:Read-only file system|Permission denied|Operation not permitted)""",
+)
+
+internal fun detectSandboxDenial(command: String, output: String): SandboxDenial? {
+    val match = sandboxDenialRegex.find(output) ?: return null
+    val path = match.groupValues[1]
+    val parentDir = path.substringBeforeLast('/', "")
+    if (parentDir.isBlank()) return null
+    return SandboxDenial(path = path, parentDir = parentDir, command = command)
 }

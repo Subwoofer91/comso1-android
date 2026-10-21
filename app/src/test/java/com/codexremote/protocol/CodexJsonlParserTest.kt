@@ -70,7 +70,8 @@ class CodexJsonlParserTest {
         val resumed = ShellCommand.codexExec("/home/codex/project", "codex", "again", "abc-123")
 
         assertTrue(fresh.contains("--json --skip-git-repo-check"))
-        assertTrue(resumed.contains("exec resume --json --skip-git-repo-check"))
+        assertTrue(resumed.contains("exec resume "))
+        assertTrue(resumed.contains("--json --skip-git-repo-check"))
         assertTrue(fresh.contains("&& exec"))
         assertTrue(!fresh.contains("model_reasoning_effort="))
         assertTrue(!resumed.contains("model_reasoning_effort="))
@@ -91,10 +92,38 @@ class CodexJsonlParserTest {
             fresh,
             fresh.contains("""sandbox_workspace_write.writable_roots=["/home/codex","/srv/agent"]"""),
         )
-        // `codex exec resume` rejects --approve-for-me/--sandbox, so resumes must not
-        // receive the new-session profile flags.
+        // `codex exec resume` rejects --approve-for-me/--sandbox, so resume uses the
+        // equivalent config overrides instead of silently falling back to read-only.
         assertTrue(!resumed.contains("--approve-for-me"))
-        assertTrue(!resumed.contains("-s workspace-write"))
+        assertTrue(!resumed.contains("--sandbox"))
+        assertTrue(resumed.contains("sandbox_mode=workspace-write"))
+        assertTrue(resumed.contains("approval_policy=on-request"))
+        assertTrue(resumed.contains("approvals_reviewer=auto_review"))
+        assertTrue(resumed.contains("sandbox_workspace_write.network_access=true"))
+        assertTrue(
+            resumed,
+            resumed.contains(
+                """sandbox_workspace_write.writable_roots=["/home/codex/project","/srv/agent"]""",
+            ),
+        )
+    }
+
+    @Test
+    fun extraWritableRootsAreMergedForSandboxEscalation() {
+        val resumed = ShellCommand.codexExec(
+            workDir = "/home/codex",
+            codexCommand = "codex",
+            message = "retry",
+            threadId = "abc-123",
+            extraWritableRoots = listOf("/home/codex/.codex"),
+        )
+
+        assertTrue(
+            resumed,
+            resumed.contains(
+                """sandbox_workspace_write.writable_roots=["/home/codex","/home/codex/.codex","/srv/agent"]""",
+            ),
+        )
     }
 
     @Test
@@ -117,7 +146,8 @@ class CodexJsonlParserTest {
         )
 
         assertTrue(fresh.contains("--json --skip-git-repo-check"))
-        assertTrue(resumed.contains("exec resume --json --skip-git-repo-check"))
+        assertTrue(resumed.contains("exec resume "))
+        assertTrue(resumed.contains("--json --skip-git-repo-check"))
         assertTrue(fresh.contains("--model"))
         assertTrue(resumed.contains("--model"))
         assertTrue(fresh.contains("gpt-6-sol"))

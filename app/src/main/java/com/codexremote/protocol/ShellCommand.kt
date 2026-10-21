@@ -9,6 +9,7 @@ object ShellCommand {
         model: String = "",
         reasoningEffort: String = "",
         imagePaths: List<String> = emptyList(),
+        extraWritableRoots: List<String> = emptyList(),
     ): String {
         val launcher = commandLauncher(codexCommand.ifBlank { "codex" })
         val preflight = if (codexCommand.isBlank() || codexCommand == "codex") {
@@ -18,6 +19,7 @@ object ShellCommand {
         }
         val writableRoots = buildList {
             if (workDir.isNotBlank()) add(workDir)
+            addAll(extraWritableRoots.filter { it.isNotBlank() })
             if (workDir != "/srv/agent") add("/srv/agent")
         }.distinct().joinToString(separator = ",", prefix = "[", postfix = "]") { root ->
             "\"" + root.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
@@ -33,6 +35,16 @@ object ShellCommand {
             "-c sandbox_workspace_write.network_access=true",
             "-c ${quote("sandbox_workspace_write.writable_roots=$writableRoots")}",
         ).joinToString(" ")
+        // `codex exec resume` rejects --approve-for-me/--sandbox, but it accepts the
+        // same settings as config overrides. Without them a resumed turn silently
+        // falls back to read-only + approval_policy=never.
+        val resumePermissionOptions = listOf(
+            "-c sandbox_mode=workspace-write",
+            "-c approval_policy=on-request",
+            "-c approvals_reviewer=auto_review",
+            "-c sandbox_workspace_write.network_access=true",
+            "-c ${quote("sandbox_workspace_write.writable_roots=$writableRoots")}",
+        ).joinToString(" ")
         val options = buildList {
             add("--json")
             add("--skip-git-repo-check")
@@ -42,13 +54,10 @@ object ShellCommand {
             }
             imagePaths.forEach { add("--image ${quote(it)}") }
         }.joinToString(" ")
-        // `codex exec resume` does not expose --approve-for-me/--sandbox, so only a
-        // freshly started thread gets the explicit profile. Resumed turns continue
-        // that thread (and stay in the workspace it was created with).
         val codex = if (threadId.isNullOrBlank()) {
             "$launcher exec $permissionOptions $options ${quote(message)}"
         } else {
-            "$launcher exec resume $options ${quote(threadId)} ${quote(message)}"
+            "$launcher exec resume $resumePermissionOptions $options ${quote(threadId)} ${quote(message)}"
         }
         return loginShell("${preflight}cd ${quote(workDir)} && exec $codex </dev/null")
     }
